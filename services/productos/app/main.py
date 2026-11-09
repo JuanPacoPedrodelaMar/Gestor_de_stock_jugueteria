@@ -2,12 +2,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database.db import Base, engine
-from app.routers import producto_router, seed_router
+from app.database.migraciones import migrar_esquema
+from app.models import solicitud_stock as _modelo_solicitud  # noqa: F401  (registra la tabla en Base)
+from app.routers import producto_router, seed_router, solicitud_router
 
 
 @asynccontextmanager
@@ -20,6 +23,7 @@ async def lifespan(app: FastAPI):
     sobreescriben la dependencia get_db con su propia sesión en memoria y
     crean sus tablas por su cuenta (ver tests/conftest.py).
     """
+    migrar_esquema(engine)
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -77,7 +81,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={
             "error": True,
             "mensaje": "Datos inválidos en la solicitud.",
-            "detalles": exc.errors(),
+            "detalles": jsonable_encoder(exc.errors()),
         },
     )
 
@@ -110,6 +114,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # Registro de rutas
 # ---------------------------------------------------------------------------
 app.include_router(producto_router.router)
+app.include_router(solicitud_router.router)
 app.include_router(seed_router.router)
 
 

@@ -1,8 +1,9 @@
 """
 Schemas de Producto.
 """
+from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from typing import Literal, Optional
 
 
 class ProductoBase(BaseModel):
@@ -77,6 +78,14 @@ class ProductoOut(ProductoBase):
     id_producto: int
     stock_actual: int
     activo: bool
+    creado_por: Optional[int] = None
+    fecha_creacion: Optional[datetime] = None
+
+    # Calculados para QUIEN CONSULTA (no se guardan): si puede eliminar este
+    # producto ahora y, si es un empleado dentro de su ventana de arrepentimiento,
+    # cuántos segundos le quedan. Para el admin siempre puede y no hay límite.
+    puede_eliminar: bool = False
+    segundos_restantes_eliminar: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -93,3 +102,48 @@ class AjusteStockIn(BaseModel):
         ...,
         description="Cantidad a sumar (positivo) o restar (negativo) del stock_actual",
     )
+
+
+class AjusteStockOut(BaseModel):
+    """
+    Registro de un ajuste de stock aplicado con una Idempotency-Key. Lo consulta
+    Movimientos para saber si una operación llegó a aplicarse (ver
+    GET /api/v1/productos/ajustes/{clave}).
+    """
+    clave: str
+    id_producto: int
+    delta: int
+    fecha_hora: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------------------------------------------------------------------
+# Solicitudes de stock (pedido de reposición)
+# ---------------------------------------------------------------------------
+
+class SolicitudStockCreate(BaseModel):
+    """Pedido de un empleado de almacén para reponer un producto."""
+    id_producto: int = Field(..., ge=1, description="Producto que necesita más stock")
+    cantidad: int = Field(..., ge=1, le=100000, description="Unidades que se piden")
+    nota: Optional[str] = Field(
+        None, max_length=200, pattern=PATRON_TEXTO_SEGURO, description="Aclaración opcional (ej: urgente para el sábado)"
+    )
+
+
+class SolicitudStockResolver(BaseModel):
+    """Resolución que da un admin a una solicitud pendiente."""
+    estado: Literal["atendida", "rechazada"]
+
+
+class SolicitudStockOut(BaseModel):
+    id_solicitud: int
+    id_producto: int
+    nombre_producto: str
+    cantidad: int
+    nota: Optional[str] = None
+    estado: Literal["pendiente", "atendida", "rechazada"]
+    solicitante: str
+    fecha_hora: datetime
+
+    model_config = ConfigDict(from_attributes=True)

@@ -12,8 +12,13 @@
           "Productos"
         ],
         "summary": "Listar Productos",
-        "description": "GET /api/v1/productos -> 200 OK con el listado.\n\nPor defecto solo devuelve productos activos. Usar\n?incluir_inactivos=true para ver también los dados de baja.",
+        "description": "GET /api/v1/productos -> 200 OK con el listado.\n\nPor defecto solo devuelve productos activos. Usar\n?incluir_inactivos=true para ver también los dados de baja.\n\nRequiere autenticación (cualquier rol). Cada producto incluye\n`puede_eliminar` y `segundos_restantes_eliminar` calculados para quien\nconsulta. Ver services/auth para el login y app/core/jwt_auth.py para el\nmecanismo de validación del JWT.",
         "operationId": "listar_productos_api_v1_productos_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "incluir_inactivos",
@@ -60,8 +65,13 @@
           "Productos"
         ],
         "summary": "Crear Producto",
-        "description": "POST /api/v1/productos -> 201 Created.",
+        "description": "POST /api/v1/productos -> 201 Created.\n\nQueda registrado quién lo cargó y cuándo: es lo que habilita la ventana de\narrepentimiento para eliminarlo (ver DELETE).",
         "operationId": "crear_producto_api_v1_productos_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -96,6 +106,54 @@
         }
       }
     },
+    "/api/v1/productos/ajustes/{clave}": {
+      "get": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Obtener Ajuste",
+        "description": "GET /api/v1/productos/ajustes/{clave} -> 200 OK o 404 Not Found.\n\nIndica si un ajuste de stock con esa Idempotency-Key llegó a aplicarse.\nLo usa Movimientos para reconciliar un movimiento que quedó \"pendiente\"\n(por ejemplo, porque se cortó la respuesta de ajustar-stock): 200 significa\nque el stock SÍ se modificó; 404, que nunca se aplicó.",
+        "operationId": "obtener_ajuste_api_v1_productos_ajustes__clave__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "clave",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Clave"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AjusteStockOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/productos/{id_producto}": {
       "get": {
         "tags": [
@@ -104,6 +162,11 @@
         "summary": "Obtener Producto",
         "description": "GET /api/v1/productos/{id} -> 200 OK o 404 Not Found.\n\nDevuelve el producto exista o no esté activo (para permitir, por\nejemplo, ver el detalle de un producto dado de baja).",
         "operationId": "obtener_producto_api_v1_productos__id_producto__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "id_producto",
@@ -143,8 +206,13 @@
           "Productos"
         ],
         "summary": "Actualizar Producto",
-        "description": "PUT /api/v1/productos/{id} -> 200 OK o 404 Not Found.\n\nActualiza únicamente los datos descriptivos del producto (nombre, marca,\nprecio_venta, stock_minimo, categoria). NO modifica stock_actual bajo\nninguna circunstancia: el schema ProductoUpdate ni siquiera acepta ese\ncampo (ver issue #6). El stock se gestiona mediante movimientos.",
+        "description": "PUT /api/v1/productos/{id} -> 200 OK o 404 Not Found. Solo admin.\n\nActualiza únicamente los datos descriptivos del producto (nombre, marca,\nprecio_venta, stock_minimo, categoria). NO modifica stock_actual bajo\nninguna circunstancia: el schema ProductoUpdate ni siquiera acepta ese\ncampo (ver issue #6). El stock se gestiona mediante movimientos.",
         "operationId": "actualizar_producto_api_v1_productos__id_producto__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "id_producto",
@@ -194,8 +262,13 @@
           "Productos"
         ],
         "summary": "Eliminar Producto",
-        "description": "DELETE /api/v1/productos/{id}.\n\nComportamiento (issue #6):\n- 204 No Content: el producto no tenía movimientos asociados y se\n  eliminó físicamente.\n- 200 OK con el producto en el body (activo=false): el producto tenía\n  movimientos asociados, así que se dio de baja lógica en lugar de\n  eliminarlo, para preservar la trazabilidad del historial.\n- 404 Not Found: no existía un producto con ese id.",
+        "description": "DELETE /api/v1/productos/{id}.\n\nQuién puede: un admin siempre. Un empleado de almacén o mixto, solo un\nproducto que cargó él mismo y durante los primeros minutos desde que lo\ncargó (ventana de arrepentimiento, 5 min por defecto; ver\nPRODUCTO_COOLDOWN_BORRADO_SEGUNDOS). Pasada la ventana solo un admin. En\ncualquier otro caso: 403 con el motivo.\n\nComportamiento (issue #6):\n- 204 No Content: el producto no tenía movimientos asociados y se\n  eliminó físicamente.\n- 200 OK con el producto en el body (activo=false): el producto tenía\n  movimientos asociados, así que se dio de baja lógica en lugar de\n  eliminarlo, para preservar la trazabilidad del historial.\n- 404 Not Found: no existía un producto con ese id.\n- 503 Service Unavailable: no se pudo consultar a Movimientos para saber\n  si hay historial. No se elimina ni se da de baja nada (falla cerrada):\n  borrar físicamente un producto con movimientos perdería trazabilidad.\n\n\"Tiene movimientos asociados\" se resuelve consultando de verdad al\nservicio de Movimientos (con el token del admin que hace la baja).",
         "operationId": "eliminar_producto_api_v1_productos__id_producto__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "id_producto",
@@ -224,14 +297,257 @@
         }
       }
     },
+    "/api/v1/productos/{id_producto}/ajustar-stock": {
+      "patch": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Ajustar Stock",
+        "description": "PATCH /api/v1/productos/{id}/ajustar-stock -> 200 OK, 404 Not Found,\n409 Conflict (sin stock) o 422 (Idempotency-Key reutilizada con otro ajuste).\n\nEndpoint consumido por el servicio de Movimientos para reflejar ventas,\ningresos, estropeos y devoluciones. El ajuste se aplica de forma atómica\n(ver producto_service.ajustar_stock_atomico), por lo que es seguro ante\nllamadas concurrentes: nunca deja stock_actual negativo.\n\nRequiere rol admin, ventas o mixto (los que pueden registrar movimientos).\nEl servicio de Movimientos reenvía el JWT del usuario que originó el\nmovimiento, así que un empleado de almacén no puede ajustar stock.\n\nIdempotencia: si se envía el header opcional Idempotency-Key, el ajuste se\naplica UNA sola vez por clave (la clave se guarda en la misma transacción\nque el cambio de stock). Repetir el pedido con la misma clave y el mismo\ncontenido no vuelve a modificar el stock y devuelve 200 con el producto\nactual. Es lo que permite a Movimientos reintentar o recuperar un\nmovimiento pendiente sin riesgo de descontar dos veces.",
+        "operationId": "ajustar_stock_api_v1_productos__id_producto__ajustar_stock_patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id_producto",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Producto"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AjusteStockIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductoOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/solicitudes-stock": {
+      "post": {
+        "tags": [
+          "Solicitudes de stock"
+        ],
+        "summary": "Pedir Stock",
+        "description": "POST /api/v1/solicitudes-stock -> 201. Pide reponer un producto (no cambia el stock).",
+        "operationId": "pedir_stock_api_v1_solicitudes_stock_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SolicitudStockCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SolicitudStockOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Solicitudes de stock"
+        ],
+        "summary": "Listar Solicitudes",
+        "description": "GET /api/v1/solicitudes-stock -> 200. El admin ve todas; almacén y mixto, solo las suyas.",
+        "operationId": "listar_solicitudes_api_v1_solicitudes_stock_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "estado",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(pendiente|atendida|rechazada)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Estado"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SolicitudStockOut"
+                  },
+                  "title": "Response Listar Solicitudes Api V1 Solicitudes Stock Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/solicitudes-stock/{id_solicitud}": {
+      "patch": {
+        "tags": [
+          "Solicitudes de stock"
+        ],
+        "summary": "Resolver Solicitud",
+        "description": "PATCH /api/v1/solicitudes-stock/{id} -> 200, 404 o 409 (ya resuelta). Solo admin.",
+        "operationId": "resolver_solicitud_api_v1_solicitudes_stock__id_solicitud__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id_solicitud",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Solicitud"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SolicitudStockResolver"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SolicitudStockOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dev/seed-productos": {
       "post": {
         "tags": [
           "Desarrollo / Datos de prueba"
         ],
         "summary": "Cargar productos de prueba (solo desarrollo)",
-        "description": "Genera e inserta `cantidad` productos con nombre, marca, categoría,\nprecio y stock aleatorios (ver app/utils/datos_prueba.py). Pensado para\nel botón \"Cargar datos de prueba\" del frontend.\n\nDevuelve 403 si HABILITAR_SEED_ENDPOINT=false en el entorno.",
+        "description": "Genera e inserta `cantidad` productos con nombre, marca, categoría,\nprecio y stock aleatorios (ver app/utils/datos_prueba.py). Pensado para\nel botón \"Cargar datos de prueba\" del frontend.\n\nSolo admin: cargar decenas de productos aleatorios de una vez no es una\ntarea de un empleado. Devuelve 403 si HABILITAR_SEED_ENDPOINT=false en el\nentorno, independientemente del rol.",
         "operationId": "seed_productos_api_v1_dev_seed_productos_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "cantidad",
@@ -319,6 +635,51 @@
   },
   "components": {
     "schemas": {
+      "AjusteStockIn": {
+        "properties": {
+          "delta": {
+            "type": "integer",
+            "title": "Delta",
+            "description": "Cantidad a sumar (positivo) o restar (negativo) del stock_actual"
+          }
+        },
+        "type": "object",
+        "required": [
+          "delta"
+        ],
+        "title": "AjusteStockIn",
+        "description": "Schema de entrada para PATCH /api/v1/productos/{id}/ajustar-stock.\n\ndelta positivo -> incrementa el stock (ingreso, devolución).\ndelta negativo -> intenta decrementar el stock (venta, estropeo); si no\nhay stock suficiente, el ajuste se rechaza de forma atómica."
+      },
+      "AjusteStockOut": {
+        "properties": {
+          "clave": {
+            "type": "string",
+            "title": "Clave"
+          },
+          "id_producto": {
+            "type": "integer",
+            "title": "Id Producto"
+          },
+          "delta": {
+            "type": "integer",
+            "title": "Delta"
+          },
+          "fecha_hora": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fecha Hora"
+          }
+        },
+        "type": "object",
+        "required": [
+          "clave",
+          "id_producto",
+          "delta",
+          "fecha_hora"
+        ],
+        "title": "AjusteStockOut",
+        "description": "Registro de un ajuste de stock aplicado con una Idempotency-Key. Lo consulta\nMovimientos para saber si una operación llegó a aplicarse (ver\nGET /api/v1/productos/ajustes/{clave})."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -338,9 +699,9 @@
             "type": "string",
             "maxLength": 120,
             "minLength": 1,
+            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$",
             "title": "Nombre",
-            "description": "Nombre del producto",
-            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+            "description": "Nombre del producto"
           },
           "marca": {
             "anyOf": [
@@ -453,6 +814,45 @@
           "activo": {
             "type": "boolean",
             "title": "Activo"
+          },
+          "creado_por": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Creado Por"
+          },
+          "fecha_creacion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Creacion"
+          },
+          "puede_eliminar": {
+            "type": "boolean",
+            "title": "Puede Eliminar",
+            "default": false
+          },
+          "segundos_restantes_eliminar": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segundos Restantes Eliminar"
           }
         },
         "type": "object",
@@ -473,9 +873,9 @@
             "type": "string",
             "maxLength": 120,
             "minLength": 1,
+            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$",
             "title": "Nombre",
-            "description": "Nombre del producto",
-            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+            "description": "Nombre del producto"
           },
           "marca": {
             "anyOf": [
@@ -525,6 +925,122 @@
         "title": "ProductoUpdate",
         "description": "Schema usado en el PUT /api/v1/productos/{id} (actualización).\n\nDeliberadamente NO incluye stock_actual. El stock operativo se modifica\núnicamente a través de movimientos de inventario (entradas, salidas,\najustes), nunca editando la ficha del producto. Esto evita que una\nedición de datos descriptivos (nombre, precio, marca, categoría) pise\naccidentalmente el stock vigente con un valor desactualizado que el\ncliente tenía cargado en un formulario.\n\nVer services/productos/README.md, sección \"Decisiones de diseño\",\npara el detalle de este cambio (issue #6)."
       },
+      "SolicitudStockCreate": {
+        "properties": {
+          "id_producto": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Id Producto",
+            "description": "Producto que necesita más stock"
+          },
+          "cantidad": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Cantidad",
+            "description": "Unidades que se piden"
+          },
+          "nota": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nota",
+            "description": "Aclaración opcional (ej: urgente para el sábado)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id_producto",
+          "cantidad"
+        ],
+        "title": "SolicitudStockCreate",
+        "description": "Pedido de un empleado de almacén para reponer un producto."
+      },
+      "SolicitudStockOut": {
+        "properties": {
+          "id_solicitud": {
+            "type": "integer",
+            "title": "Id Solicitud"
+          },
+          "id_producto": {
+            "type": "integer",
+            "title": "Id Producto"
+          },
+          "nombre_producto": {
+            "type": "string",
+            "title": "Nombre Producto"
+          },
+          "cantidad": {
+            "type": "integer",
+            "title": "Cantidad"
+          },
+          "nota": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nota"
+          },
+          "estado": {
+            "type": "string",
+            "enum": [
+              "pendiente",
+              "atendida",
+              "rechazada"
+            ],
+            "title": "Estado"
+          },
+          "solicitante": {
+            "type": "string",
+            "title": "Solicitante"
+          },
+          "fecha_hora": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fecha Hora"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id_solicitud",
+          "id_producto",
+          "nombre_producto",
+          "cantidad",
+          "estado",
+          "solicitante",
+          "fecha_hora"
+        ],
+        "title": "SolicitudStockOut"
+      },
+      "SolicitudStockResolver": {
+        "properties": {
+          "estado": {
+            "type": "string",
+            "enum": [
+              "atendida",
+              "rechazada"
+            ],
+            "title": "Estado"
+          }
+        },
+        "type": "object",
+        "required": [
+          "estado"
+        ],
+        "title": "SolicitudStockResolver",
+        "description": "Resolución que da un admin a una solicitud pendiente."
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -557,6 +1073,12 @@
           "type"
         ],
         "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

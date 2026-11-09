@@ -1,0 +1,364 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API - Servicio de Clientes",
+    "description": "Clientes de la juguetería: alta, búsqueda y consulta (ID propio, documento libre, email y teléfono opcionales)",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/clientes": {
+      "post": {
+        "tags": [
+          "Clientes"
+        ],
+        "summary": "Crear Cliente",
+        "description": "POST /api/v1/clientes -> 201. El id lo asigna el sistema; el documento puede repetirse.",
+        "operationId": "crear_cliente_api_v1_clientes_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClienteCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClienteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Clientes"
+        ],
+        "summary": "Buscar Clientes",
+        "description": "GET /api/v1/clientes?q=... -> 200. Búsqueda de clientes.",
+        "operationId": "buscar_clientes_api_v1_clientes_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 60
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Texto a buscar en id, documento, email o teléfono. Sin texto: los últimos dados de alta.",
+              "title": "Q"
+            },
+            "description": "Texto a buscar en id, documento, email o teléfono. Sin texto: los últimos dados de alta."
+          },
+          {
+            "name": "limite",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limite"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClienteOut"
+                  },
+                  "title": "Response Buscar Clientes Api V1 Clientes Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/{id_cliente}": {
+      "get": {
+        "tags": [
+          "Clientes"
+        ],
+        "summary": "Obtener Cliente",
+        "description": "GET /api/v1/clientes/{id} -> 200 o 404. También lo consulta Movimientos para validar un id_cliente.",
+        "operationId": "obtener_cliente_api_v1_clientes__id_cliente__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id_cliente",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Cliente"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClienteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "tags": [
+          "Root"
+        ],
+        "summary": "Root",
+        "description": "Endpoint raíz simple para verificar que el servidor está activo.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Root"
+        ],
+        "summary": "Health",
+        "description": "Healthcheck simple para el orquestador (Docker healthcheck, ver docker-compose.yml).",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ClienteCreate": {
+        "properties": {
+          "documento": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "pattern": "^[0-9A-Za-z][0-9A-Za-z .\\-/]*$",
+            "title": "Documento",
+            "description": "DNI, pasaporte u otro documento. Puede repetirse entre clientes."
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120,
+                "pattern": "^[^@\\s<>;=`\\\\{}\\\"'()]+@[^@\\s<>;=`\\\\{}\\\"'()]+\\.[^@\\s<>;=`\\\\{}\\\"'()]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Opcional"
+          },
+          "telefono": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 30,
+                "pattern": "^\\+?[0-9(][0-9 ()\\-]{5,24}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telefono",
+            "description": "Opcional"
+          }
+        },
+        "type": "object",
+        "required": [
+          "documento"
+        ],
+        "title": "ClienteCreate"
+      },
+      "ClienteOut": {
+        "properties": {
+          "id_cliente": {
+            "type": "integer",
+            "title": "Id Cliente"
+          },
+          "documento": {
+            "type": "string",
+            "title": "Documento"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "telefono": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telefono"
+          },
+          "fecha_alta": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fecha Alta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id_cliente",
+          "documento",
+          "fecha_alta"
+        ],
+        "title": "ClienteOut"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

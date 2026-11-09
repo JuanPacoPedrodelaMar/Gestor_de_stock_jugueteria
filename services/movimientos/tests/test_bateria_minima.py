@@ -95,17 +95,14 @@ def test_carga_20_peticiones_concurrentes(
 # con el formato de error del proyecto, nunca 500, y no guardar nada.
 # ---------------------------------------------------------------------------
 CARGAS_MALICIOSAS = [
-    ("xss_en_dni", {"dni_cliente": "<script>alert(1)</script>"}),
-    ("sqli_corta_en_dni", {"dni_cliente": "' OR '1'='1"}),
-    ("sqli_drop_table", {"dni_empleado": "1; DROP TABLE movimientos;--"}),
-    ("comilla_y_comentario", {"dni_cliente": "123'--"}),
-    ("path_traversal", {"dni_cliente": "../../etc/passwd"}),
-    ("byte_nulo", {"dni_empleado": "1234\u0000"}),
-    ("salto_de_linea_final", {"dni_cliente": "12345678\n"}),
     ("categoria_inyectada", {"categoria_movimiento": "venta'; DROP TABLE movimientos;--"}),
     ("cantidad_inyectada", {"cantidad_movida": "1 OR 1=1"}),
+    ("cliente_sqli", {"id_cliente": "1 OR 1=1"}),
+    ("cliente_xss", {"id_cliente": "<script>alert(1)</script>"}),
+    ("cliente_negativo", {"id_cliente": -1}),
+    ("cliente_cero", {"id_cliente": 0}),
+    ("producto_inyectado", {"id_producto": "1; DROP TABLE movimientos;--"}),
 ]
-
 
 @pytest.mark.parametrize(
     "malicioso",
@@ -126,11 +123,12 @@ def test_sanitizacion_caracteres_maliciosos_devuelven_400_y_no_500(
     assert _cantidad_de_movimientos(session_factory) == 0
 
 
-def test_sanitizacion_no_rechaza_datos_validos(client, movimiento_payload):
-    """Control: el filtro no puede ser tan estricto que rechace un DNI real."""
-    assert client.post(URL, json=movimiento_payload).status_code == 201
-    sin_dni = {**movimiento_payload, "dni_cliente": None, "dni_empleado": None}
-    assert client.post(URL, json=sin_dni).status_code == 201
+def test_sanitizacion_no_rechaza_datos_validos(client, clientes, movimiento_payload):
+    """Control: el filtro no puede ser tan estricto que rechace datos reales."""
+    assert client.post(URL, json=movimiento_payload).status_code == 201  # sin cliente: es opcional
+    id_cliente = clientes.alta(documento="AB-123.456/7")
+    con_cliente = {**movimiento_payload, "id_cliente": id_cliente}
+    assert client.post(URL, json=con_cliente).status_code == 201
 
 
 # ---------------------------------------------------------------------------

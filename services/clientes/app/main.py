@@ -1,0 +1,122 @@
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.database.db import Base, engine
+from app.models import cliente as _modelo_cliente  # noqa: F401  (registra el modelo en Base)
+from app.routers import cliente_router
+
+logger = logging.getLogger("clientes")
+
+
+def inicializar_base() -> None:
+    """
+    Crea las tablas que falten al arrancar la app (no al importar el módulo, para
+    que importar app.main desde los tests no escriba en la base real).
+    """
+    Base.metadata.create_all(bind=engine)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    inicializar_base()
+    yield
+
+
+app = FastAPI(
+    title="API - Servicio de Clientes",
+    description="Clientes de la juguetería: alta, búsqueda y consulta (ID propio, documento libre, email y teléfono opcionales)",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS: permite que el frontend, servido desde otro origen/puerto, llame a la API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En producción conviene restringir al dominio real del frontend.
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Encabezados de seguridad (se agregan a TODA respuesta, incluidos los errores)
+# ---------------------------------------------------------------------------
+ENCABEZADOS_SEGURIDAD = {
+    # Anti-sniffing: el navegador respeta el Content-Type declarado y no "adivina".
+    "X-Content-Type-Options": "nosniff",
+    # Anti-clickjacking: ningún sitio ajeno puede mostrar esta respuesta en un iframe.
+    "X-Frame-Options": "DENY",
+    # Equivalente moderno de X-Frame-Options (los navegadores nuevos lo priorizan).
+    "Content-Security-Policy": "frame-ancestors 'none'",
+}
+
+
+@app.middleware("http")
+async def agregar_encabezados_seguridad(request: Request, call_next):
+    response = await call_next(request)
+    for nombre, valor in ENCABEZADOS_SEGURIDAD.items():
+        response.headers[nombre] = valor
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Middleware centralizado de manejo de errores (mismo patrón que Productos y Movimientos)
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Captura errores de validación de Pydantic y los traduce a 400 Bad Request."""
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "error": True,
+            "mensaje": "Datos inválidos en la solicitud.",
+            "detalles": jsonable_encoder(exc.errors()),
+        },
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Estandariza las respuestas de error (404, 409, 503, etc.) en formato JSON."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": True, "mensaje": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Captura cualquier excepción no controlada y devuelve 500 sin exponer trazas internas."""
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"error": True, "mensaje": "Error interno del servidor."},
+        # Este 500 lo arma la capa más externa de Starlette, por fuera del
+        # middleware de arriba: los encabezados se agregan acá a mano.
+        headers=ENCABEZADOS_SEGURIDAD,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Registro de rutas
+# ---------------------------------------------------------------------------
+app.include_router(cliente_router.router)
+
+
+@app.get("/", tags=["Root"])
+def root():
+    """Endpoint raíz simple para verificar que el servidor está activo."""
+    return {"mensaje": "API Clientes. Ver /docs para la documentación interactiva."}
+
+
+@app.get("/health", tags=["Root"])
+def health():
+    """Healthcheck simple para el orquestador (Docker healthcheck, ver docker-compose.yml)."""
+    return {"status": "ok", "service": "clientes"}

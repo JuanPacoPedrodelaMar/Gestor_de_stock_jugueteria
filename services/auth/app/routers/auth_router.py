@@ -1,12 +1,16 @@
 """
 Rutas del servicio auth.
 """
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.database.db import get_db
 from app.core.dependencies import requerir_rol
+from app.models.usuario import TODOS_LOS_ROLES
+from app.core.redis_client import token_esta_revocado
 from app.schemas.usuario import (
     UsuarioCreate,
     UsuarioOut,
@@ -25,12 +29,12 @@ bearer_scheme = HTTPBearer(auto_error=False)
 @router.post("/login", response_model=TokenResponse, status_code=status.HTTP_200_OK)
 def login(datos: LoginRequest, db: Session = Depends(get_db)):
     """
-    Autentica con email/password y devuelve un par de tokens (access +
-    refresh). Bloquea temporalmente tras demasiados intentos fallidos
-    seguidos (ver app/core/redis_client.py).
+    Autentica con DNI (empleados) o email, más la contraseña, y devuelve un
+    par de tokens (access + refresh). Bloquea temporalmente tras demasiados
+    intentos fallidos seguidos (ver app/core/redis_client.py).
     """
     try:
-        access_token, refresh_token = auth_service.login(db, datos.email, datos.password)
+        access_token, refresh_token = auth_service.login(db, datos.identificador, datos.password)
     except CuentaBloqueada as e:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -39,7 +43,7 @@ def login(datos: LoginRequest, db: Session = Depends(get_db)):
     except CredencialesInvalidas:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email o contraseña incorrectos.",
+            detail="DNI/email o contraseña incorrectos.",
         )
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
@@ -95,10 +99,31 @@ def logout(
     return None
 
 
+@router.get("/tokens/{jti}/revocado", status_code=status.HTTP_200_OK)
+def consultar_revocacion(jti: str):
+    """
+    Informa si un access token (identificado por su jti) fue revocado con logout.
+
+    SOLO PARA EL MODO LOCAL SIN DOCKER (ver ejecutar_local.ps1). Con Docker,
+    productos y movimientos comparten el mismo Redis que auth y consultan la
+    blacklist directamente. Sin Redis compartido (cada proceso con su
+    fakeredis), no ven las revocaciones de auth: en ese modo le preguntan a
+    este endpoint. Por eso está deshabilitado por defecto (responde 404) y se
+    activa con HABILITAR_CONSULTA_REVOCACION=true.
+
+    Es público a propósito (los servicios no tienen credenciales propias): el
+    jti es un UUID aleatorio y la respuesta es un solo booleano, así que no
+    revela nada a quien no tenga ya el token.
+    """
+    if os.getenv("HABILITAR_CONSULTA_REVOCACION", "false").lower() != "true":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return {"jti": jti, "revocado": token_esta_revocado(jti)}
+
+
 @router.get("/me", response_model=UsuarioOut, status_code=status.HTTP_200_OK)
 def quien_soy(
     db: Session = Depends(get_db),
-    payload: dict = Depends(requerir_rol("admin", "empleado")),
+    payload: dict = Depends(requerir_rol(*TODOS_LOS_ROLES)),
 ):
     """Devuelve los datos del usuario autenticado actual."""
     usuario = auth_service.obtener_usuario_por_id(db, int(payload["sub"]))
@@ -118,11 +143,16 @@ def quien_soy(
     dependencies=[Depends(requerir_rol("admin"))],
 )
 def crear_usuario(datos: UsuarioCreate, db: Session = Depends(get_db)):
-    """Crea un usuario nuevo (admin o empleado). Solo accesible por un admin."""
+    """Crea un usuario nuevo (admin, almacen, ventas o mixto). Solo accesible por un admin."""
     if auth_service.obtener_usuario_por_email(db, datos.email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Ya existe un usuario con ese email.",
+        )
+    if datos.dni and auth_service.obtener_usuario_por_dni(db, datos.dni):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ya existe un usuario con ese DNI.",
         )
     return auth_service.crear_usuario(db, datos)
 

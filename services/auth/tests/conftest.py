@@ -79,6 +79,8 @@ def client(db_session, monkeypatch):
 
     from app import main as main_module
     monkeypatch.setattr(main_module, "crear_admin_inicial_si_no_existe", lambda: None)
+    # Tampoco se migra la base real (./data/auth.db) al arrancar.
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         try:
@@ -104,16 +106,38 @@ def crear_admin(db_session):
     return {"email": "admin@test.com", "password": "admin12345"}
 
 
-@pytest.fixture()
-def crear_empleado(db_session):
-    """Crea un usuario empleado directamente en la DB de test y devuelve sus credenciales."""
+def _crear_empleado(db_session, rol, email, dni, password):
     from app.services.auth_service import crear_usuario
     from app.schemas.usuario import UsuarioCreate
+
+    crear_usuario(
+        db_session,
+        UsuarioCreate(email=email, password=password, nombre=f"Empleado {rol.value}", rol=rol, dni=dni),
+    )
+    # Se devuelve el login por email: es el que usan la mayoría de los tests.
+    return {"email": email, "password": password}
+
+
+@pytest.fixture()
+def crear_empleado(db_session):
+    """Empleado mixto (el sucesor del antiguo rol \"empleado\"), DNI 30111222."""
     from app.models.usuario import RolUsuario
 
-    datos = UsuarioCreate(email="empleado@test.com", password="empleado123", nombre="Empleado Test", rol=RolUsuario.EMPLEADO)
-    crear_usuario(db_session, datos)
-    return {"email": "empleado@test.com", "password": "empleado123"}
+    return _crear_empleado(db_session, RolUsuario.MIXTO, "empleado@test.com", "30111222", "empleado123")
+
+
+@pytest.fixture()
+def crear_almacen(db_session):
+    from app.models.usuario import RolUsuario
+
+    return _crear_empleado(db_session, RolUsuario.ALMACEN, "almacen@test.com", "30222333", "almacen123")
+
+
+@pytest.fixture()
+def crear_ventas(db_session):
+    from app.models.usuario import RolUsuario
+
+    return _crear_empleado(db_session, RolUsuario.VENTAS, "ventas@test.com", "30333444", "ventas1234")
 
 
 @pytest.fixture()

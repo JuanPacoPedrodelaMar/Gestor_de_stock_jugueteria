@@ -33,21 +33,20 @@ _HABILITADO = os.getenv("HABILITAR_SEED_ENDPOINT", "true").lower() == "true"
     response_model=list[ProductoOut],
     status_code=status.HTTP_201_CREATED,
     summary="Cargar productos de prueba (solo desarrollo)",
-    dependencies=[Depends(requerir_rol("admin", "empleado"))],
 )
 def seed_productos(
     cantidad: int = Query(20, ge=1, le=200, description="Cantidad de productos a generar (1-200)."),
     db: Session = Depends(get_db),
+    payload: dict = Depends(requerir_rol("admin")),
 ):
     """
     Genera e inserta `cantidad` productos con nombre, marca, categoría,
     precio y stock aleatorios (ver app/utils/datos_prueba.py). Pensado para
     el botón "Cargar datos de prueba" del frontend.
 
-    Requiere estar autenticado (admin o empleado, mismo criterio que
-    POST /productos, ya que generar productos de prueba no es más sensible
-    que crear un producto real). Devuelve 403 si
-    HABILITAR_SEED_ENDPOINT=false en el entorno, independientemente del rol.
+    Solo admin: cargar decenas de productos aleatorios de una vez no es una
+    tarea de un empleado. Devuelve 403 si HABILITAR_SEED_ENDPOINT=false en el
+    entorno, independientemente del rol.
     """
     if not _HABILITADO:
         raise HTTPException(
@@ -56,4 +55,4 @@ def seed_productos(
         )
 
     productos_generados = generar_productos_prueba(cantidad)
-    return producto_service.crear_productos_masivo(db, productos_generados)
+    return producto_service.crear_productos_masivo(db, productos_generados, creado_por=int(payload["sub"]))

@@ -39,11 +39,20 @@ services:
       DATABASE_URL: ${AUTH_DATABASE_URL:-sqlite:////app/data/auth.db}
       AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-}
       AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-}
+      AUTH_ADMIN_DNI: ${AUTH_ADMIN_DNI:-}
       HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
       PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
       PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
-      PRUEBA_EMPLEADO_EMAIL: ${PRUEBA_EMPLEADO_EMAIL:-empleado@test.com}
-      PRUEBA_EMPLEADO_PASSWORD: ${PRUEBA_EMPLEADO_PASSWORD:-empleado123}
+      PRUEBA_ADMIN_DNI: ${PRUEBA_ADMIN_DNI:-20000001}
+      PRUEBA_ALMACEN_EMAIL: ${PRUEBA_ALMACEN_EMAIL:-almacen@test.com}
+      PRUEBA_ALMACEN_PASSWORD: ${PRUEBA_ALMACEN_PASSWORD:-almacen123}
+      PRUEBA_ALMACEN_DNI: ${PRUEBA_ALMACEN_DNI:-30000002}
+      PRUEBA_VENTAS_EMAIL: ${PRUEBA_VENTAS_EMAIL:-ventas@test.com}
+      PRUEBA_VENTAS_PASSWORD: ${PRUEBA_VENTAS_PASSWORD:-ventas123}
+      PRUEBA_VENTAS_DNI: ${PRUEBA_VENTAS_DNI:-30000003}
+      PRUEBA_MIXTO_EMAIL: ${PRUEBA_MIXTO_EMAIL:-mixto@test.com}
+      PRUEBA_MIXTO_PASSWORD: ${PRUEBA_MIXTO_PASSWORD:-mixto123}
+      PRUEBA_MIXTO_DNI: ${PRUEBA_MIXTO_DNI:-30000004}
     volumes:
       - auth_data:/app/data
     ports:
@@ -64,14 +73,42 @@ services:
     container_name: jugueteria-productos
     restart: unless-stopped
     environment:
+      PRODUCTO_COOLDOWN_BORRADO_SEGUNDOS: ${PRODUCTO_COOLDOWN_BORRADO_SEGUNDOS:-300}
       DATABASE_URL: ${PRODUCTOS_DATABASE_URL:-sqlite:////app/data/jugueteria.db}
       HABILITAR_SEED_ENDPOINT: ${HABILITAR_SEED_ENDPOINT:-true}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
+      # Productos le pregunta a Movimientos si un producto tiene historial antes
+      # de borrarlo (solo en tiempo de ejecución). Por eso NO hay depends_on de
+      # movimientos: movimientos ya depende de productos y sería un ciclo.
+      MOVIMIENTOS_SERVICE_URL: http://movimientos:8000
     volumes:
       - productos_data:/app/data
     ports:
       - "${PRODUCTOS_PORT:-8000}:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  clientes:
+    build:
+      context: ./services/clientes
+    container_name: jugueteria-clientes
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${CLIENTES_DATABASE_URL:-sqlite:////app/data/clientes.db}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - clientes_data:/app/data
+    ports:
+      - "${CLIENTES_PORT:-8004}:8000"
     depends_on:
       redis:
         condition: service_healthy
@@ -90,15 +127,20 @@ services:
     environment:
       DATABASE_URL: ${MOVIMIENTOS_DATABASE_URL:-sqlite:////app/data/movimientos.db}
       PRODUCTOS_SERVICE_URL: http://productos:8000
+      CLIENTES_SERVICE_URL: http://clientes:8000
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
       RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS:-admin123}@rabbitmq:5672/
+      # Cada cuántos segundos el relay del outbox reintenta publicar eventos pendientes.
+      OUTBOX_INTERVALO_SEGUNDOS: ${OUTBOX_INTERVALO_SEGUNDOS:-5}
     volumes:
       - movimientos_data:/app/data
     ports:
       - "${MOVIMIENTOS_PORT:-8002}:8000"
     depends_on:
       productos:
+        condition: service_healthy
+      clientes:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -119,15 +161,25 @@ services:
     environment:
       PRODUCTOS_SERVICE_URL: http://productos:8000
       RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS:-admin123}@rabbitmq:5672/
+      WORKER_HEALTH_PORT: 8003
     volumes:
       - alertas_data:/app/data
+    ports:
+      - "${WORKER_PORT:-8003}:8003"
     depends_on:
       productos:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      # No es un servicio HTTP: no tiene healthcheck propio, se verifica
-      # por logs (docker compose logs -f worker-alertas).
+    # El worker consume una cola, pero expone GET /health (ver
+    # services/worker-alertas/health.py): 200 solo si está consumiendo y su
+    # latido es reciente. La imagen no trae curl, por eso se usa Python.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
 
   frontend:
     build:
@@ -138,17 +190,28 @@ services:
       PRODUCTOS_API_URL: ${PRODUCTOS_API_URL:-http://localhost:8000}
       AUTH_API_URL: ${AUTH_API_URL:-http://localhost:8001}
       MOVIMIENTOS_API_URL: ${MOVIMIENTOS_API_URL:-http://localhost:8002}
+      CLIENTES_API_URL: ${CLIENTES_API_URL:-http://localhost:8004}
       HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
       PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
       PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
-      PRUEBA_EMPLEADO_EMAIL: ${PRUEBA_EMPLEADO_EMAIL:-empleado@test.com}
-      PRUEBA_EMPLEADO_PASSWORD: ${PRUEBA_EMPLEADO_PASSWORD:-empleado123}
+      PRUEBA_ADMIN_DNI: ${PRUEBA_ADMIN_DNI:-20000001}
+      PRUEBA_ALMACEN_EMAIL: ${PRUEBA_ALMACEN_EMAIL:-almacen@test.com}
+      PRUEBA_ALMACEN_PASSWORD: ${PRUEBA_ALMACEN_PASSWORD:-almacen123}
+      PRUEBA_ALMACEN_DNI: ${PRUEBA_ALMACEN_DNI:-30000002}
+      PRUEBA_VENTAS_EMAIL: ${PRUEBA_VENTAS_EMAIL:-ventas@test.com}
+      PRUEBA_VENTAS_PASSWORD: ${PRUEBA_VENTAS_PASSWORD:-ventas123}
+      PRUEBA_VENTAS_DNI: ${PRUEBA_VENTAS_DNI:-30000003}
+      PRUEBA_MIXTO_EMAIL: ${PRUEBA_MIXTO_EMAIL:-mixto@test.com}
+      PRUEBA_MIXTO_PASSWORD: ${PRUEBA_MIXTO_PASSWORD:-mixto123}
+      PRUEBA_MIXTO_DNI: ${PRUEBA_MIXTO_DNI:-30000004}
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     depends_on:
       productos:
         condition: service_healthy
       movimientos:
+        condition: service_healthy
+      clientes:
         condition: service_healthy
       auth:
         condition: service_healthy
@@ -162,6 +225,7 @@ services:
 volumes:
   productos_data:
   movimientos_data:
+  clientes_data:
   auth_data:
   redis_data:
   rabbitmq_data:

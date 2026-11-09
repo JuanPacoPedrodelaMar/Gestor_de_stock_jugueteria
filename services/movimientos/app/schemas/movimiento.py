@@ -8,11 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 CategoriaMovimiento = Literal["venta", "ingreso", "estropeo", "devolucion"]
 
-# El DNI son solo dígitos, hasta 8 (mismo criterio que el frontend, ver
-# restringirInputDni en frontend/app.js). Aceptar únicamente ese formato deja
-# afuera comillas, signos "<>", ";", "--", "../", bytes nulos y saltos de línea.
-PATRON_DNI = r"^[0-9]{1,8}$"
-
 
 class MovimientoCreate(BaseModel):
     """Schema usado en el POST /api/v1/movimientos (única forma de crear un movimiento)."""
@@ -24,8 +19,11 @@ class MovimientoCreate(BaseModel):
         ..., gt=0, description="Cantidad movida, siempre positiva; el signo lo define la categoría"
     )
     id_producto: int = Field(..., description="ID del producto afectado (servicio de Productos)")
-    dni_cliente: Optional[str] = Field(None, pattern=PATRON_DNI, description="DNI: solo dígitos, hasta 8")
-    dni_empleado: Optional[str] = Field(None, pattern=PATRON_DNI, description="DNI: solo dígitos, hasta 8")
+    id_cliente: Optional[int] = Field(
+        None, ge=1, description="ID del cliente (opcional). Se crea en el servicio de Clientes (POST /api/v1/clientes)."
+    )
+    # No hay campo de empleado: el DNI del empleado lo toma el servidor del token.
+    # Si un cliente de la API lo manda igual, se ignora (no se puede falsear).
 
 
 class MovimientoOut(BaseModel):
@@ -36,7 +34,34 @@ class MovimientoOut(BaseModel):
     categoria_movimiento: str
     cantidad_movida: int
     id_producto: int
-    dni_cliente: Optional[str] = None
-    dni_empleado: Optional[str] = None
+    id_cliente: Optional[int] = None
+    cliente_documento: Optional[str] = Field(
+        None, description="Documento del cliente al momento del movimiento (copia; el dato vivo está en Clientes)."
+    )
+    dni_cliente: Optional[str] = Field(None, description="Solo en movimientos anteriores a la tabla de clientes.")
+    dni_empleado: Optional[str] = Field(None, description="DNI del empleado que lo registró (del token).")
+    estado: Literal["pendiente", "confirmado"] = Field(
+        "confirmado",
+        description=(
+            "confirmado: el stock ya fue ajustado. pendiente: se guardó la solicitud pero "
+            "todavía no se confirmó el ajuste de stock (reintentar con la misma Idempotency-Key)."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CantidadMovimientosOut(BaseModel):
+    """Cantidad de movimientos de un producto (la usa Productos antes de dar de baja)."""
+
+    id_producto: int
+    cantidad: int
+
+
+class ReconciliacionOut(BaseModel):
+    """Resultado de POST /api/v1/movimientos/reconciliar."""
+
+    revisados: int
+    confirmados: int
+    descartados: int
+    sin_resolver: int

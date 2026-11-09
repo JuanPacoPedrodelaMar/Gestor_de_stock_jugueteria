@@ -15,10 +15,10 @@ from jose import jwt
 from app.core.jwt_auth import SECRET_KEY, ALGORITHM
 
 
-def _generar_token(rol="admin", tipo="access", segundos_para_expirar=900, jti="jti-test"):
+def _generar_token(rol="admin", tipo="access", segundos_para_expirar=900, jti="jti-test", sub="1"):
     ahora = int(time.time())
     payload = {
-        "sub": "1",
+        "sub": sub,
         "email": "usuario@test.com",
         "rol": rol,
         "tipo": tipo,
@@ -48,12 +48,22 @@ def test_listar_productos_con_token_valido_devuelve_200(client_sin_auth):
     assert resp.status_code == 200
 
 
-def test_listar_productos_con_rol_empleado_tambien_funciona(client_sin_auth):
-    token = _generar_token(rol="empleado")
+@pytest.mark.parametrize("rol", ["almacen", "ventas", "mixto"])
+def test_listar_productos_con_cualquier_rol_de_empleado_funciona(client_sin_auth, rol):
+    token = _generar_token(rol=rol)
 
     resp = client_sin_auth.get("/api/v1/productos", headers=_auth_header(token))
 
     assert resp.status_code == 200
+
+
+def test_el_rol_generico_empleado_ya_no_tiene_acceso(client_sin_auth):
+    """El rol "empleado" se reemplazó por almacen/ventas/mixto: un token viejo no entra."""
+    token = _generar_token(rol="empleado")
+
+    resp = client_sin_auth.get("/api/v1/productos", headers=_auth_header(token))
+
+    assert resp.status_code == 403
 
 
 def test_token_con_firma_invalida_devuelve_401(client_sin_auth):
@@ -88,14 +98,14 @@ def test_crear_producto_sin_token_devuelve_401(client_sin_auth, producto_payload
     assert resp.status_code == 401
 
 
-def test_eliminar_producto_con_rol_empleado_devuelve_403(client_sin_auth, producto_payload):
-    """DELETE está restringido a admin (issue #7): empleado debe recibir 403."""
+def test_empleado_no_puede_eliminar_un_producto_que_cargo_otro(client_sin_auth, producto_payload):
+    """Un empleado solo elimina lo que cargó él (ver test_roles_y_borrado.py): lo del admin, no."""
     token_admin = _generar_token(rol="admin")
     creado = client_sin_auth.post(
         "/api/v1/productos", json=producto_payload, headers=_auth_header(token_admin)
     ).json()
 
-    token_empleado = _generar_token(rol="empleado")
+    token_empleado = _generar_token(rol="mixto", sub="2")  # otra persona: no es el autor
     resp = client_sin_auth.delete(
         f"/api/v1/productos/{creado['id_producto']}", headers=_auth_header(token_empleado)
     )

@@ -43,8 +43,25 @@ Roles:
 
 | Rol | Acceso |
 |---|---|
-| `admin` | CRUD completo, incluido `DELETE` |
-| `empleado` | Listar, ver, crear y actualizar. **No** puede eliminar. |
+| `admin` | CRUD completo, `DELETE` sin restricciones y atender solicitudes de stock |
+| `almacen` | Listar, ver, **crear**; **eliminar solo lo que cargó él mismo durante los primeros 5 minutos**; pedir reposición de stock. **No** edita. |
+| `ventas` | Listar y ver. No crea, edita ni elimina. Sus movimientos sí ajustan el stock (vía `movimientos`). |
+| `mixto` | Lo de `almacen` y lo de `ventas`. |
+
+### Ventana de arrepentimiento para eliminar
+
+Cada producto guarda quién lo cargó (`creado_por`) y cuándo (`fecha_creacion`).
+Un `almacen` o `mixto` puede eliminar un producto **solo si lo cargó él mismo y
+hace menos de 5 minutos** (`PRODUCTO_COOLDOWN_BORRADO_SEGUNDOS`, por defecto
+300): sirve para deshacer una carga hecha por error. Pasado ese tiempo, o si lo
+cargó otra persona, recibe `403` con el motivo y solo un `admin` puede
+eliminarlo. Los productos anteriores a este campo (sin autor) también quedan
+solo para el admin. La eliminación sigue las reglas de siempre: con movimientos
+asociados es una baja lógica.
+
+Para que el panel sepa qué botón mostrar, cada producto de `GET` y `POST`
+incluye `puede_eliminar` y `segundos_restantes_eliminar`, calculados para quien
+consulta (el admin siempre puede y no tiene límite de tiempo).
 
 Ver `app/core/jwt_auth.py` para el mecanismo de validación.
 
@@ -52,14 +69,20 @@ Ver `app/core/jwt_auth.py` para el mecanismo de validación.
 
 | Método | Ruta | Descripción | Rol mínimo |
 |---|---|---|---|
-| GET | `/api/v1/productos` | Lista productos. Por defecto solo `activo=true`. `?incluir_inactivos=true` para ver también los dados de baja. | `empleado` |
-| GET | `/api/v1/productos/{id}` | Obtiene un producto por ID (activo o no). | `empleado` |
-| POST | `/api/v1/productos` | Crea un producto. Acepta `stock_actual` (default 0). | `empleado` |
-| PUT | `/api/v1/productos/{id}` | Actualiza datos descriptivos. **No acepta `stock_actual`** (ver más abajo). | `empleado` |
-| DELETE | `/api/v1/productos/{id}` | Elimina o da de baja según tenga movimientos asociados (ver más abajo). | `admin` |
-| PATCH | `/api/v1/productos/{id}/ajustar-stock` | Ajusta el stock atómicamente. **Endpoint interno**, consumido por `services/movimientos`. | `empleado` |
+| GET | `/api/v1/productos` | Lista productos. Por defecto solo `activo=true`. `?incluir_inactivos=true` para ver también los dados de baja. | cualquiera |
+| GET | `/api/v1/productos/{id}` | Obtiene un producto por ID (activo o no). | cualquiera |
+| POST | `/api/v1/productos` | Crea un producto. Acepta `stock_actual` (default 0). Registra el autor. | `admin`, `almacen`, `mixto` |
+| PUT | `/api/v1/productos/{id}` | Actualiza datos descriptivos. **No acepta `stock_actual`** (ver más abajo). | `admin` |
+| DELETE | `/api/v1/productos/{id}` | Elimina o da de baja según tenga movimientos asociados (ver más abajo). Empleados: solo lo suyo y dentro de la ventana de 5 min. | `admin`, `almacen`*, `mixto`* |
+| PATCH | `/api/v1/productos/{id}/ajustar-stock` | Ajusta el stock atómicamente. **Endpoint interno**, consumido por `services/movimientos` con el token de quien registra el movimiento. | `admin`, `ventas`, `mixto` |
+| GET | `/api/v1/productos/ajustes/{clave}` | ¿Se aplicó un ajuste con esa `Idempotency-Key`? 200 o 404. Lo usa `movimientos` para reconciliar. | `admin`, `ventas`, `mixto` |
+| POST | `/api/v1/solicitudes-stock` | Pide reposición de un producto. **No cambia el stock**: es un aviso. | `almacen`, `mixto` |
+| GET | `/api/v1/solicitudes-stock?estado=` | Lista solicitudes (el admin ve todas; almacén y mixto, las propias). | `admin`, `almacen`, `mixto` |
+| PATCH | `/api/v1/solicitudes-stock/{id}` | Marca una solicitud pendiente como `atendida` o `rechazada` (`409` si ya estaba resuelta). | `admin` |
 | GET | `/health` | Healthcheck (sin auth). | — |
-| POST | `/api/v1/dev/seed-productos?cantidad=N` | Genera N productos de prueba. Solo desarrollo. | `empleado` |
+| POST | `/api/v1/dev/seed-productos?cantidad=N` | Genera N productos de prueba. Solo desarrollo. | `admin` |
+
+\* con las restricciones de la sección anterior (solo productos propios, durante la ventana).
 
 El contrato completo está exportado en [`openapi.json`](./openapi.json)
 (regenerarlo con `python export_openapi.py` tras cualquier cambio de
@@ -79,6 +102,18 @@ ingresos, estropeos y devoluciones sobre el stock. El body es:
 decrementarlo (venta, estropeo). El ajuste se aplica de forma **atómica**
 (ver sección Concurrencia más abajo), así que es seguro ante llamadas
 concurrentes: nunca deja `stock_actual` negativo.
+
+**Idempotente (opcional):** si se envía el header `Idempotency-Key`, el ajuste se
+aplica **una sola vez por clave**. La clave se guarda en la tabla
+`ajustes_stock` **en la misma transacción** que el cambio de stock, así que no
+puede quedar un ajuste aplicado sin su clave ni al revés. Repetir el pedido
+(mismo producto y misma cantidad) devuelve `200` con el producto actual y no
+vuelve a modificar el stock; con dos pedidos simultáneos con la misma clave, la
+clave primaria deja pasar a uno solo y el otro revierte su cambio. Reutilizar la
+clave para un ajuste distinto devuelve `422`. Un ajuste rechazado por falta de
+stock (409) **no** consume la clave. Es lo que permite a `movimientos`
+reintentar o recuperar un movimiento pendiente sin descontar dos veces. Sin
+header, el comportamiento es el de siempre.
 
 El token del usuario que originó el movimiento se propaga desde
 `movimientos` hacia acá — no se usan credenciales de servicio. Así, las
@@ -132,14 +167,23 @@ Un producto dado de baja:
 - **No** aparece en `GET /api/v1/productos` por defecto.
 - Sí aparece con `GET /api/v1/productos?incluir_inactivos=true`.
 
-**Limitación actual:** la función
-`producto_service.tiene_movimientos_asociados` sigue siendo un *stub* que
-siempre devuelve `False` — aunque `services/movimientos` ya existe, la
-consulta real a su API todavía no está implementada. Hoy, en la práctica,
-todo `DELETE` resulta en borrado físico. El punto de integración está
-aislado en esa única función: cuando se agregue la consulta real (vía la
-API REST de `movimientos`), no hará falta tocar el router ni el resto del
-servicio.
+**Cómo se decide "tiene movimientos":** `producto_service.tiene_movimientos_asociados`
+consulta de verdad al servicio `movimientos`
+(`GET /api/v1/productos/{id}/movimientos/cantidad`, vía
+`app/clients/movimientos_client.py`), reenviando el token del admin que hace la
+baja. Cuenta los movimientos confirmados y también los pendientes de
+confirmación (el stock pudo haberse ajustado ya).
+
+Si `movimientos` no responde, el `DELETE` **falla cerrado**: devuelve `503` y no
+borra ni da de baja nada. Suponer "sin movimientos" ante la duda llevaría a
+borrar físicamente un producto con historial, que es justo lo que esta
+decisión evita. La consulta y el borrado no forman una transacción (son
+servicios distintos), así que un movimiento registrado en los milisegundos
+entre ambos pasos no se vería.
+
+`productos` solo llama a `movimientos` en tiempo de ejecución; en
+`docker-compose.yml` no hay `depends_on` en esa dirección (movimientos ya
+depende de productos y sería un ciclo).
 
 ## Concurrencia en el ajuste de stock
 
@@ -191,8 +235,28 @@ de llegada ni el paralelismo.
   `"sin_stock"`, y el stock nunca queda negativo).
 
 ```bash
-docker compose exec productos pytest tests/test_concurrencia_stock.py -v
+cd services/productos
+pip install -r requirements-dev.txt
+python -m pytest tests/test_concurrencia_stock.py -v
 ```
+
+## Validación de entrada y encabezados de seguridad
+
+**Validación.** Los campos de texto libre (`nombre`, `marca`, `categoria`) no
+pueden contener `<` `>` `;` `=` `{` `}` `\`, el acento grave ni caracteres de
+control (byte nulo, saltos de línea, tabulaciones). Un valor así devuelve
+`400` con el formato de error del proyecto, antes de tocar la base. Se
+aceptan tildes, ñ y la puntuación habitual (`. , - ' & / ( ) + : % # ° ® ™ ! ?`).
+El filtro está en `ProductoEntrada` (base de `ProductoCreate` y
+`ProductoUpdate`) y **no** en `ProductoOut`: así un producto guardado antes de
+este control sigue listándose sin dar un `500`.
+
+**Headers.** Un middleware agrega `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY` y `Content-Security-Policy: frame-ancestors 'none'` a
+toda respuesta, incluidos los errores. El `500` inesperado lo arma Starlette
+por fuera de los middlewares, así que su handler los recibe explícitos.
+
+Ambos puntos están cubiertos por `tests/test_bateria_minima.py`.
 
 ## Datos de prueba (`/api/v1/dev/seed-productos`)
 
@@ -211,7 +275,7 @@ inventario.
   variable de entorno `HABILITAR_SEED_ENDPOINT=false` (ver
   `.env.example`) para no exponerlo en un entorno que no sea de
   desarrollo/pruebas.
-- Requiere estar autenticado (rol `empleado` o `admin`).
+- Solo el rol `admin` puede usarlo.
 
 ## Persistencia
 
@@ -229,6 +293,15 @@ de acceso a datos está detrás de SQLAlchemy, así que migrar a Postgres en
 el futuro implica cambiar `DATABASE_URL` y agregar el driver
 correspondiente al `requirements.txt`, sin tocar modelos, schemas ni
 lógica de negocio.
+- **El filtro de caracteres es una lista de prohibidos, no una lista
+  blanca**: es una capa adicional; la defensa principal contra la inyección
+  SQL son las consultas con parámetros enlazados de SQLAlchemy.
+- **Pool de conexiones por defecto de SQLAlchemy (5 más 10 de desborde)**:
+  en una prueba local con 150 ventas simultáneas y stock suficiente, la
+  mayoría de las peticiones no obtuvo respuesta (`QueuePool limit of size 5
+  overflow 10 reached`); con `pool_size=20` y `max_overflow=60` en
+  `create_engine` se resolvieron todas. Ese ajuste todavía no está aplicado,
+  y la prueba de 20 peticiones de la batería no llega a exponerlo.
 
 ## Variables de entorno
 
@@ -237,15 +310,17 @@ lógica de negocio.
 | `DATABASE_URL` | `sqlite:///./data/jugueteria.db` | URL de la base propia |
 | `AUTH_SECRET_KEY` | — (obligatoria) | Mismo secreto que `auth`, para validar JWT localmente |
 | `REDIS_URL` | `redis://localhost:6379/0` | Para consultar la blacklist de tokens revocados. Se puede usar `memory://` en desarrollo (usa `fakeredis`) |
+| `AUTH_SERVICE_URL` | — | **Solo modo local** (`REDIS_URL=memory://`): URL de `auth`. Como cada servicio tiene su propio Redis en memoria, acá se le pregunta a `auth` si un token fue revocado para que el logout sea efectivo |
+| `MOVIMIENTOS_SERVICE_URL` | `http://localhost:8002` | URL interna del servicio Movimientos (para saber si un producto tiene historial). En Docker Compose: `http://movimientos:8000` |
+| `MOVIMIENTOS_SERVICE_TIMEOUT` | `5` (segundos) | Timeout de esa consulta |
 | `HABILITAR_SEED_ENDPOINT` | `true` | Habilita/deshabilita el router de seed |
 
 ## Limitaciones conocidas
 
-- **`tiene_movimientos_asociados` es un stub** (ver arriba): aunque
-  `services/movimientos` ya existe, la consulta real todavía no está
-  implementada, así que la baja lógica no se activa en la práctica. El
-  mecanismo sí está probado (ver `tests/test_baja_logica_productos.py`,
-  que lo ejercita simulando la respuesta con `monkeypatch`).
+- **La baja de un producto depende de que `movimientos` responda**: si está
+  caído, `DELETE` devuelve 503 (ver "Baja lógica"). Es deliberado (falla
+  cerrado), pero significa que no se puede borrar mientras `movimientos` no esté
+  disponible.
 - **Sin paginación** en `GET /api/v1/productos`: devuelve el listado
   completo. Con el volumen de datos esperado para una juguetería (decenas
   o cientos de productos) no es un problema práctico, pero no escalaría
@@ -262,14 +337,20 @@ lógica de negocio.
   de la blacklist de tokens falla hacia "no revocado" (se sigue validando
   firma y expiración). Es una decisión para no bloquear todo el servicio
   por una dependencia secundaria; la contrapartida es que un logout no
-  invalida el token hasta que expire solo.
+  invalida el token hasta que expire solo. En el modo local sin Docker, con
+  `AUTH_SERVICE_URL` definida, la revocación se consulta a `auth` (una llamada
+  HTTP por request) y, si `auth` no responde, se aplica el mismo criterio.
 
 ## Tests
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+python -m pytest
 ```
+
+(En Windows, `.\ejecutar_local.ps1 -Tests` desde la raíz del repositorio hace
+todo esto sola; `-Bateria` corre solo `test_bateria_minima.py`.) Los tests no
+están dentro de la imagen de Docker.
 
 La suite cubre:
 - **CRUD** (`tests/test_crud_productos.py`): camino feliz de las 5
@@ -279,7 +360,16 @@ La suite cubre:
   particular que el PUT nunca modifique `stock_actual` aunque el cliente
   intente enviarlo.
 - **Baja lógica** (`tests/test_baja_logica_productos.py`): comportamiento
-  de `DELETE` con y sin movimientos simulados, filtro `incluir_inactivos`.
+  de `DELETE` con y sin movimientos (simulados con el stub `movimientos_stub`
+  de `conftest.py`), filtro `incluir_inactivos`.
+- **Idempotencia del ajuste** (`tests/test_idempotencia_ajuste.py`): misma
+  clave no descuenta dos veces, clave reutilizada → 422, un 409 no consume la
+  clave, consulta `GET /ajustes/{clave}`, y dos pedidos simultáneos con la misma
+  clave con hilos reales (se descuenta una sola vez).
+- **Integración con movimientos** (`tests/test_integracion_movimientos.py`):
+  `DELETE` consulta de verdad a Movimientos (baja lógica / borrado físico), falla
+  cerrada con 503 si no responde, reenvía el token, traducción de errores del
+  cliente HTTP, y la revocación de tokens consultada a `auth` en modo local.
 - **Concurrencia** (`tests/test_concurrencia_stock.py`): reproduce la
   sobreventa con un ajuste no atómico y verifica que el ajuste atómico la
   previene.
@@ -291,8 +381,20 @@ La suite cubre:
 - **Integración** (`tests/test_integracion.py`): flujos completos
   encadenados (crear → editar → listar → eliminar) y healthcheck.
 
-Cada test corre contra una base SQLite en memoria aislada (no comparte
-estado entre tests, no toca el filesystem ni la base real del contenedor).
+- **Batería de carga y blindaje** (`tests/test_bateria_minima.py`, 18 tests):
+  un test unitario de la regla de negocio, uno de integración (201 con el
+  schema JSON) y uno de datos corruptos (400); la **carga concurrente** (20
+  `PATCH /ajustar-stock` simultáneos sobre un producto con stock 20: las 20
+  salen bien, el stock termina en 0, e imprime latencia media y tasa de
+  éxito); la **sanitización** (10 payloads maliciosos en nombre, marca,
+  categoría y precio devuelven 400 y no se guardan; la edición también los
+  rechaza; un control confirma que nombres reales como `Autito 1/64 (Hot
+  Wheels®)` se aceptan); y los **headers de seguridad** en respuestas 200,
+  201, 400, 404 y 500.
+
+Cada test corre contra una base SQLite aislada (no comparte estado entre
+tests ni toca la base real del contenedor): en memoria, salvo el test de
+carga, que usa un archivo temporal porque necesita varias conexiones a la vez.
 La autenticación se simula con overrides de dependencias (ver
 `tests/conftest.py`), salvo los tests específicos de auth, que usan el
 mecanismo real con JWT firmados.

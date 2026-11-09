@@ -3,11 +3,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database.db import Base, engine, SessionLocal
+from app.database.migraciones import migrar_esquema
 from app.models.usuario import Usuario, RolUsuario
 from app.core.security import hashear_password
 from app.routers import auth_router
@@ -39,6 +41,7 @@ def crear_admin_inicial_si_no_existe():
             password_hash=hashear_password(password),
             nombre="Administrador",
             rol=RolUsuario.ADMIN,
+            dni=os.getenv("AUTH_ADMIN_DNI") or None,
         )
         db.add(admin)
         db.commit()
@@ -48,21 +51,23 @@ def crear_admin_inicial_si_no_existe():
 
 def crear_usuarios_de_prueba_si_no_existen():
     """
-    SOLO PARA ENTORNOS DE PRUEBA. Si HABILITAR_USUARIOS_PRUEBA=true, crea un
-    usuario admin y uno empleado con las credenciales definidas en las
-    variables PRUEBA_ADMIN_EMAIL / PRUEBA_ADMIN_PASSWORD y
-    PRUEBA_EMPLEADO_EMAIL / PRUEBA_EMPLEADO_PASSWORD (ver .env.example).
+    SOLO PARA ENTORNOS DE PRUEBA. Si HABILITAR_USUARIOS_PRUEBA=true, crea una
+    cuenta por rol (admin, almacen, ventas, mixto) con las credenciales de las
+    variables PRUEBA_<ROL>_EMAIL / _PASSWORD / _DNI (ver .env.example).
 
-    Es idempotente: si el email ya existe, no lo toca. El frontend usa esas
-    mismas variables para mostrar los botones de "acceso rápido" por rol.
-    Poner HABILITAR_USUARIOS_PRUEBA=false en cualquier entorno real.
+    Es idempotente: si el email ya existe no lo recrea (solo le completa el DNI
+    si todavía no tenía). El frontend usa esas mismas variables para mostrar
+    los botones de "acceso rápido" por rol. Poner HABILITAR_USUARIOS_PRUEBA=false
+    en cualquier entorno real.
     """
     if os.getenv("HABILITAR_USUARIOS_PRUEBA", "false").lower() != "true":
         return
 
     usuarios_prueba = [
         ("PRUEBA_ADMIN", "Admin (prueba)", RolUsuario.ADMIN),
-        ("PRUEBA_EMPLEADO", "Empleado (prueba)", RolUsuario.EMPLEADO),
+        ("PRUEBA_ALMACEN", "Empleado de almacén (prueba)", RolUsuario.ALMACEN),
+        ("PRUEBA_VENTAS", "Empleado de ventas (prueba)", RolUsuario.VENTAS),
+        ("PRUEBA_MIXTO", "Empleado mixto (prueba)", RolUsuario.MIXTO),
     ]
 
     db = SessionLocal()
@@ -70,15 +75,20 @@ def crear_usuarios_de_prueba_si_no_existen():
         for prefijo, nombre, rol in usuarios_prueba:
             email = os.getenv(f"{prefijo}_EMAIL")
             password = os.getenv(f"{prefijo}_PASSWORD")
+            dni = os.getenv(f"{prefijo}_DNI") or None
             if not email or not password:
                 continue
-            if db.query(Usuario).filter(Usuario.email == email).first():
+            existente = db.query(Usuario).filter(Usuario.email == email).first()
+            if existente:
+                if dni and not existente.dni and not db.query(Usuario).filter(Usuario.dni == dni).first():
+                    existente.dni = dni
                 continue
             db.add(Usuario(
                 email=email,
                 password_hash=hashear_password(password),
                 nombre=nombre,
                 rol=rol,
+                dni=dni,
             ))
         db.commit()
     finally:
@@ -87,6 +97,7 @@ def crear_usuarios_de_prueba_si_no_existen():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    migrar_esquema(engine)
     Base.metadata.create_all(bind=engine)
     crear_admin_inicial_si_no_existe()
     crear_usuarios_de_prueba_si_no_existen()
@@ -115,7 +126,7 @@ app.add_middleware(
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content={"error": True, "mensaje": "Datos inválidos en la solicitud.", "detalles": exc.errors()},
+        content={"error": True, "mensaje": "Datos inválidos en la solicitud.", "detalles": jsonable_encoder(exc.errors())},
     )
 
 

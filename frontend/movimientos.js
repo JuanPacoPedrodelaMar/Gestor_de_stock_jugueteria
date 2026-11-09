@@ -6,10 +6,14 @@
  * el header Authorization: Bearer <access_token> y maneja el refresco de la
  * sesión.
  *
- * Dropdowns custom (producto y categoría): no se usa <datalist> ni <select>
- * nativos porque queremos consistencia visual, control total del estilo, y
- * poder mostrar nombres largos en varias líneas. El valor seleccionado se
- * guarda en variables, no se parsea del texto del input.
+ * Dropdowns custom (producto, categoría y cliente): no se usa <datalist> ni
+ * <select> nativos porque queremos consistencia visual, control total del
+ * estilo, y poder mostrar nombres largos en varias líneas. El valor
+ * seleccionado se guarda en variables, no se parsea del texto del input.
+ * La categoría y el producto se pueden ESCRIBIR para filtrar la lista.
+ *
+ * El empleado del movimiento no se completa acá: el servidor lo toma del DNI
+ * de la sesión. El cliente se elige de la lista o se crea (ver clientes.js).
  */
 const MOVIMIENTOS_API_BASE = `${(window.APP_CONFIG && window.APP_CONFIG.MOVIMIENTOS_API_URL) || "http://localhost:8002"}/api/v1`;
 
@@ -26,8 +30,6 @@ const inputCategoria = document.getElementById("mov_categoria_input");
 const listaCategorias = document.getElementById("mov-categorias-lista");
 
 const campoCantidad = document.getElementById("mov_cantidad");
-const campoDniCliente = document.getElementById("mov_dni_cliente");
-const campoDniEmpleado = document.getElementById("mov_dni_empleado");
 const tablaMovimientos = document.getElementById("tabla-movimientos");
 const btnGuardarMovimiento = document.getElementById("btn-guardar-movimiento");
 
@@ -50,7 +52,7 @@ const CATEGORIA_POR_DEFECTO = "venta";
 // Estado de los dropdowns
 let productosDisponibles = [];
 let productoSeleccionadoId = null;
-let categoriaSeleccionada = CATEGORIA_POR_DEFECTO;
+let categoriaSeleccionada = CATEGORIA_POR_DEFECTO; // null mientras lo escrito no coincide con ninguna
 
 function formatearFecha(iso) {
   try {
@@ -159,25 +161,22 @@ inputProducto.addEventListener("keydown", (evento) => {
 });
 
 // ---------------------------------------------------------------------------
-// Dropdown de categorías
+// Dropdown de categorías (se puede escribir para filtrar)
 // ---------------------------------------------------------------------------
 
-function renderizarListaCategorias() {
-  listaCategorias.innerHTML = CATEGORIAS_MOVIMIENTO
-    .map(
-      (c) =>
-        `<div class="dropdown-opcion" data-valor="${c.valor}">${escaparHtml(c.texto)}</div>`
-    )
-    .join("");
-}
-
-function mostrarListaCategorias() {
-  renderizarListaCategorias();
-  listaCategorias.hidden = false;
-}
-
-function ocultarListaCategorias() {
-  listaCategorias.hidden = true;
+function categoriaPorTexto(texto) {
+  const buscado = normalizarTexto(texto);
+  if (!buscado) return null;
+  // Coincidencia exacta con el texto de la opción, su valor ("venta") o su nombre sin la aclaración.
+  const exacta = CATEGORIAS_MOVIMIENTO.find(
+    (c) => normalizarTexto(c.texto) === buscado ||
+           c.valor === buscado ||
+           normalizarTexto(c.texto.split("(")[0]) === buscado
+  );
+  if (exacta) return exacta;
+  // Si lo escrito identifica a una sola opción, también vale ("dev" -> Devolución).
+  const parciales = CATEGORIAS_MOVIMIENTO.filter((c) => normalizarTexto(c.texto).includes(buscado));
+  return parciales.length === 1 ? parciales[0] : null;
 }
 
 function seleccionarCategoria(valor) {
@@ -185,45 +184,44 @@ function seleccionarCategoria(valor) {
   if (!categoria) return;
   categoriaSeleccionada = categoria.valor;
   inputCategoria.value = categoria.texto;
-  ocultarListaCategorias();
+  limpiarErrorDeCampo(inputCategoria);
 }
 
 function reiniciarCategoria() {
   seleccionarCategoria(CATEGORIA_POR_DEFECTO);
 }
 
-inputCategoria.addEventListener("focus", () => {
-  mostrarListaCategorias();
-});
+/** Si el usuario escribió el texto sin elegirlo de la lista, intenta resolverlo. */
+function resolverCategoriaEscrita() {
+  if (categoriaSeleccionada) return;
+  const encontrada = categoriaPorTexto(inputCategoria.value);
+  if (encontrada) seleccionarCategoria(encontrada.valor);
+}
 
-inputCategoria.addEventListener("click", () => {
-  // Si el usuario hace click y por algún motivo estaba cerrada, la abre.
-  if (listaCategorias.hidden) mostrarListaCategorias();
+crearCombo({
+  input: inputCategoria,
+  lista: listaCategorias,
+  opciones: (texto) => {
+    // Con una categoría ya elegida, al abrir la lista se muestran todas (no solo la elegida).
+    const elegida = CATEGORIAS_MOVIMIENTO.find((c) => c.valor === categoriaSeleccionada);
+    const buscado = elegida && texto === elegida.texto ? "" : normalizarTexto(texto);
+    return CATEGORIAS_MOVIMIENTO
+      .filter((c) => !buscado || normalizarTexto(c.texto).includes(buscado))
+      .map((c) => ({ clave: c.valor, texto: c.texto }));
+  },
+  alElegir: (opcion) => seleccionarCategoria(opcion.clave),
+  alEscribir: () => { categoriaSeleccionada = null; },
 });
-
-listaCategorias.addEventListener("click", (evento) => {
-  const opcion = evento.target.closest(".dropdown-opcion[data-valor]");
-  if (!opcion) return;
-  seleccionarCategoria(opcion.dataset.valor);
-  inputCategoria.blur();
-});
-
-inputCategoria.addEventListener("keydown", (evento) => {
-  if (evento.key === "Escape") {
-    ocultarListaCategorias();
-  }
-});
+inputCategoria.addEventListener("change", resolverCategoriaEscrita);
 
 // ---------------------------------------------------------------------------
-// Cierre de dropdowns al hacer click afuera
+// Cierre del dropdown de productos al hacer click afuera
+// (la categoría y el cliente cierran el suyo desde crearCombo)
 // ---------------------------------------------------------------------------
 
 document.addEventListener("click", (evento) => {
   if (!wrapperProducto.contains(evento.target)) {
     ocultarListaProductos();
-  }
-  if (!wrapperCategoria.contains(evento.target)) {
-    ocultarListaCategorias();
   }
 });
 
@@ -254,6 +252,18 @@ async function cargarMovimientos() {
   }
 }
 
+/**
+ * Cliente de un movimiento: "#12 · 30123456". El documento es una copia que el
+ * movimiento guardó al registrarse (los clientes viven en el servicio de
+ * Clientes). Los movimientos viejos solo tienen un DNI suelto.
+ */
+function textoClienteDeMovimiento(mov) {
+  if (mov.id_cliente && mov.cliente_documento) return `#${mov.id_cliente} · ${mov.cliente_documento}`;
+  if (mov.id_cliente) return `#${mov.id_cliente}`;
+  if (mov.dni_cliente) return `${mov.dni_cliente} (sin ficha)`;
+  return "—";
+}
+
 function renderizarTablaMovimientos(movimientos) {
   if (!movimientos.length) {
     tablaMovimientos.innerHTML = `<tr><td colspan="7" class="vacio">Todavía no hay movimientos registrados.</td></tr>`;
@@ -268,10 +278,16 @@ function renderizarTablaMovimientos(movimientos) {
         <tr>
           <td>${mov.id_movimiento}</td>
           <td>${formatearFecha(mov.fecha_hora)}</td>
-          <td><span class="badge-categoria ${etiqueta.clase}">${etiqueta.texto}</span></td>
+          <td>
+            <span class="badge-categoria ${etiqueta.clase}">${etiqueta.texto}</span>${
+              mov.estado === "pendiente"
+                ? `<span class="badge-pendiente" title="Se guardó el movimiento pero todavía no se confirmó el ajuste de stock. Reintentá el registro o pedí a un administrador que reconcilie.">Pendiente</span>`
+                : ""
+            }
+          </td>
           <td>#${mov.id_producto}</td>
           <td>${mov.cantidad_movida}</td>
-          <td>${escaparHtml(mov.dni_cliente || "—")}</td>
+          <td>${escaparHtml(textoClienteDeMovimiento(mov))}</td>
           <td>${escaparHtml(mov.dni_empleado || "—")}</td>
         </tr>
       `;
@@ -292,8 +308,7 @@ const MAPA_CAMPOS_MOVIMIENTO = {
   categoria_movimiento: "mov_categoria_input",
   cantidad_movida: "mov_cantidad",
   id_producto: "mov_producto_input",
-  dni_cliente: "mov_dni_cliente",
-  dni_empleado: "mov_dni_empleado",
+  id_cliente: "mov_cliente_input",
 };
 
 // Mensajes propios de cada campo cuando el backend responde 400 (reemplazan al texto genérico).
@@ -301,8 +316,7 @@ const TRADUCCIONES_MOVIMIENTO = {
   categoria_movimiento: () => "Elegí una categoría de la lista.",
   id_producto: () => "Elegí un producto de la lista de sugerencias.",
   cantidad_movida: () => "Ingresá una cantidad entera de 1 en adelante.",
-  dni_cliente: () => "El DNI debe tener solo números (hasta 8 dígitos).",
-  dni_empleado: () => "El DNI debe tener solo números (hasta 8 dígitos).",
+  id_cliente: () => "Elegí un cliente de la lista o creá uno nuevo.",
 };
 
 /** UUID v4 para el header Idempotency-Key (con alternativa si el navegador no tiene randomUUID). */
@@ -339,12 +353,31 @@ formMovimiento.addEventListener("submit", async (evento) => {
     return;
   }
 
+  // La categoría también se puede escribir: se resuelve lo tipeado y, si no
+  // corresponde a ninguna opción, se pide elegir una.
+  resolverCategoriaEscrita();
+  if (!categoriaSeleccionada) {
+    marcarCampoInvalido(inputCategoria, "Elegí una categoría de la lista: Venta, Ingreso, Estropeo o Devolución.");
+    mostrarEstado("Revisá los campos marcados en rojo.", "error");
+    inputCategoria.focus();
+    return;
+  }
+
+  // Cliente (opcional): si escribió algo sin elegir un cliente, se avisa en vez de ignorarlo.
+  if (textoDeClienteSinElegir()) {
+    marcarCampoInvalido(inputCliente, "Elegí un cliente de la lista de sugerencias, o borrá el texto si no hay cliente.");
+    mostrarEstado("Revisá los campos marcados en rojo.", "error");
+    inputCliente.focus();
+    return;
+  }
+
+  // No hay campo de empleado: el servidor lo toma del DNI de tu sesión.
+  const cliente = obtenerClienteElegido();
   const payload = {
     categoria_movimiento: categoriaSeleccionada,
     cantidad_movida: parseInt(campoCantidad.value, 10),
     id_producto: productoSeleccionadoId,
-    dni_cliente: campoDniCliente.value.trim() || null,
-    dni_empleado: campoDniEmpleado.value.trim() || null,
+    id_cliente: cliente ? cliente.id_cliente : null,
   };
 
   // Un intento = una Idempotency-Key. Si el intento anterior terminó sin
@@ -373,15 +406,18 @@ formMovimiento.addEventListener("submit", async (evento) => {
 
     const data = await leerJson(resp);
 
-    // Con cualquier respuesta definitiva (< 500) el intento terminó: el
-    // próximo envío usará una clave nueva. Con 5xx el resultado es incierto:
-    // se conserva la clave para que el reintento no duplique el movimiento.
-    if (resp.status < 500) intentoMovimiento = null;
+    // Con una respuesta definitiva (< 500, salvo 401) el intento terminó: el
+    // próximo envío usará una clave nueva. Con 5xx el resultado es incierto, y
+    // con 401 el servidor pudo haber dejado el movimiento "pendiente" (ver
+    // Movimientos): en ambos casos se conserva la clave para que el reintento
+    // lo complete en lugar de duplicarlo.
+    if (resp.status < 500 && resp.status !== 401) intentoMovimiento = null;
 
     if (resp.ok) {
       mostrarEstado("Movimiento registrado correctamente. El stock del producto fue actualizado.", "ok");
       formMovimiento.reset();
       limpiarSeleccionProducto();
+      limpiarClienteElegido();
       reiniciarCategoria();
       cargarMovimientos();
       cargarOpcionesDeProductos();
@@ -402,6 +438,12 @@ formMovimiento.addEventListener("submit", async (evento) => {
       marcarCampoInvalido(campoCantidad, ayuda);
       campoCantidad.focus();
       mostrarEstado(data.mensaje, "error");
+    } else if (resp.status === 404 && /cliente/i.test(data.mensaje || "")) {
+      // El cliente elegido ya no existe: se lo quita y se pide elegir otro (o ninguno).
+      limpiarClienteElegido();
+      marcarCampoInvalido(inputCliente, "Ese cliente ya no existe. Elegí otro, creá uno nuevo o dejalo vacío.");
+      inputCliente.focus();
+      mostrarEstado(data.mensaje || "El cliente indicado no existe.", "error");
     } else if (resp.status === 404) {
       // El producto elegido ya no existe (p. ej. lo eliminaron desde otra pantalla).
       limpiarSeleccionProducto();
@@ -411,6 +453,9 @@ formMovimiento.addEventListener("submit", async (evento) => {
       mostrarEstado(data.mensaje || "El producto indicado no existe.", "error");
     } else {
       mostrarEstado(data.mensaje || data.detail || "Ocurrió un error al registrar el movimiento.", "error");
+      // Con un error del servidor el movimiento puede haber quedado "pendiente":
+      // se refresca el historial para que se vea (con su etiqueta).
+      if (resp.status >= 500) cargarMovimientos();
     }
   } catch (error) {
     if (error.sesionExpirada) return;
@@ -438,8 +483,15 @@ formMovimiento.addEventListener("input", (evento) => limpiarErrorDeCampo(evento.
 // Aplicar restricciones de entrada al formulario de movimientos.
 // Las funciones están definidas en app.js (mismo scope global).
 restringirInputNumerico(campoCantidad);
-restringirInputDni(campoDniCliente);
-restringirInputDni(campoDniEmpleado);
+
+/** Se llama al iniciar sesión: muestra con qué DNI va a quedar registrado cada movimiento. */
+function prepararMovimientos() {
+  const aviso = document.getElementById("mov-registra-como");
+  if (!aviso || !usuarioActual) return;
+  aviso.textContent = usuarioActual.dni
+    ? `Este movimiento va a quedar registrado a nombre de ${usuarioActual.nombre} (DNI ${usuarioActual.dni}). Se completa solo desde tu sesión.`
+    : `Este movimiento va a quedar registrado a nombre de ${usuarioActual.nombre}.`;
+}
 
 // Categoría por defecto: Venta.
 reiniciarCategoria();
@@ -455,9 +507,13 @@ btnEjemploMovimiento.addEventListener("click", async () => {
   }
   limpiarErroresDeCampo(formMovimiento);
   seleccionarProducto(producto.id_producto);
-  seleccionarCategoria("venta");
+  // Una venta necesita stock: si el producto no tiene, el ejemplo es un ingreso
+  // (siempre válido) para que el ejemplo se pueda registrar tal cual.
+  const hayStock = producto.stock_actual >= 1;
+  seleccionarCategoria(hayStock ? "venta" : "ingreso");
+  if (!hayStock) {
+    mostrarEstado("Ese producto no tiene stock, por eso el ejemplo es un ingreso (una venta no se podría registrar).", "ok");
+  }
   campoCantidad.value = "1";
-  campoDniCliente.value = "30123456";
-  campoDniEmpleado.value = "28900111";
   campoCantidad.focus();
 });

@@ -174,6 +174,8 @@ def client_concurrente(session_factory_archivo, monkeypatch):
     # El arranque de la app llamaría a create_all sobre la base real: se anula,
     # igual que en conftest.py.
     monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *a, **k: None)
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         db = session_factory_archivo()

@@ -42,6 +42,17 @@ def obtener_usuario_por_email(db: Session, email: str) -> Usuario | None:
     return db.query(Usuario).filter(Usuario.email == email).first()
 
 
+def obtener_usuario_por_dni(db: Session, dni: str) -> Usuario | None:
+    return db.query(Usuario).filter(Usuario.dni == dni).first()
+
+
+def obtener_usuario_por_identificador(db: Session, identificador: str) -> Usuario | None:
+    """El identificador es un email (si tiene "@") o un DNI."""
+    if "@" in identificador:
+        return obtener_usuario_por_email(db, identificador)
+    return obtener_usuario_por_dni(db, identificador)
+
+
 def obtener_usuario_por_id(db: Session, id_usuario: int) -> Usuario | None:
     return db.query(Usuario).filter(Usuario.id_usuario == id_usuario).first()
 
@@ -52,6 +63,7 @@ def crear_usuario(db: Session, datos: UsuarioCreate) -> Usuario:
         password_hash=hashear_password(datos.password),
         nombre=datos.nombre,
         rol=datos.rol,
+        dni=datos.dni,
     )
     db.add(nuevo)
     db.commit()
@@ -67,20 +79,21 @@ def listar_usuarios(db: Session) -> list[Usuario]:
 # Login
 # ---------------------------------------------------------------------------
 
-def login(db: Session, email: str, password: str) -> tuple[str, str]:
+def login(db: Session, identificador: str, password: str) -> tuple[str, str]:
     """
     Valida credenciales y, si son correctas, emite un par (access, refresh)
-    de tokens nuevos.
+    de tokens nuevos. `identificador` es el DNI del empleado o un email.
 
-    Levanta CuentaBloqueada si el email superó el máximo de intentos
+    Levanta CuentaBloqueada si ese identificador superó el máximo de intentos
     fallidos recientes (issue #7: "bloqueo por intentos fallidos"), y
-    CredencialesInvalidas si el email no existe, la contraseña no coincide,
-    o el usuario está inactivo.
+    CredencialesInvalidas si no existe, la contraseña no coincide, o el
+    usuario está inactivo.
     """
+    email = identificador  # nombre histórico: es la clave del contador de intentos
     if redis_client.esta_bloqueado(email):
         raise CuentaBloqueada(redis_client.segundos_restantes_bloqueo(email))
 
-    usuario = obtener_usuario_por_email(db, email)
+    usuario = obtener_usuario_por_identificador(db, identificador)
 
     # OJO: se ejecuta verificar_password incluso si el usuario no existe
     # (contra un hash "dummy"), para que el tiempo de respuesta no revele
@@ -111,7 +124,9 @@ def _emitir_par_de_tokens(usuario: Usuario) -> tuple[str, str]:
     access_jti = generar_jti()
     refresh_jti = generar_jti()
 
-    access_token = crear_access_token(usuario.id_usuario, usuario.email, usuario.rol.value, access_jti)
+    access_token = crear_access_token(
+        usuario.id_usuario, usuario.email, usuario.rol.value, access_jti, dni=usuario.dni
+    )
     refresh_token = crear_refresh_token(usuario.id_usuario, refresh_jti)
 
     guardar_refresh_token(refresh_jti, usuario.id_usuario, REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600)

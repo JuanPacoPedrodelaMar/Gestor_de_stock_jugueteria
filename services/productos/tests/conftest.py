@@ -26,8 +26,37 @@ from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.clients import movimientos_client
 from app.database.db import Base, get_db
 from app.core.jwt_auth import obtener_usuario_actual
+
+
+class MovimientosStub:
+    """
+    Reemplaza a app.clients.movimientos_client.contar_movimientos en los tests,
+    para que ninguno dependa de tener el servicio de Movimientos corriendo.
+    Por defecto responde "0 movimientos" (producto sin historial). Cada test
+    puede cambiar `cantidad` o fijar `error` para simular otros escenarios, y
+    consultar `llamadas` para ver con qué (id_producto, token) se lo llamó.
+    """
+
+    def __init__(self):
+        self.cantidad = 0
+        self.error = None
+        self.llamadas = []
+
+    def contar(self, id_producto, token):
+        self.llamadas.append((id_producto, token))
+        if self.error is not None:
+            raise self.error
+        return self.cantidad
+
+
+@pytest.fixture(autouse=True)
+def movimientos_stub(monkeypatch):
+    stub = MovimientosStub()
+    monkeypatch.setattr(movimientos_client, "contar_movimientos", stub.contar)
+    return stub
 
 
 @pytest.fixture()
@@ -62,7 +91,20 @@ def _payload_admin_fake():
 
 
 def _payload_empleado_fake():
-    return {"sub": "2", "email": "empleado@test.com", "rol": "empleado", "tipo": "access", "jti": "jti-fake-empleado"}
+    """Empleado mixto (el sucesor del antiguo rol "empleado")."""
+    return payload_de("mixto", sub="2")
+
+
+def payload_de(rol, sub="1", dni=None):
+    """Payload de un access token ya validado, para simular a un usuario de ese rol."""
+    return {
+        "sub": str(sub),
+        "email": f"{rol}{sub}@test.com",
+        "rol": rol,
+        "dni": dni or f"3000000{sub}",
+        "tipo": "access",
+        "jti": f"jti-fake-{rol}-{sub}",
+    }
 
 
 @pytest.fixture()
@@ -77,6 +119,9 @@ def client(db_session, monkeypatch):
     from app.database import db as db_module
 
     monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *a, **k: None)
+    # Tampoco se migra la base real al arrancar (los tests crean sus tablas solos).
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         try:
@@ -88,6 +133,12 @@ def client(db_session, monkeypatch):
     app.dependency_overrides[obtener_usuario_actual] = _payload_admin_fake
 
     with TestClient(app) as test_client:
+        def como(rol, sub="1", dni=None):
+            """Cambia el usuario autenticado a mitad de un test (otro rol u otra persona)."""
+            app.dependency_overrides[obtener_usuario_actual] = lambda: payload_de(rol, sub, dni)
+            return test_client
+
+        test_client.como = como
         yield test_client
 
     app.dependency_overrides.clear()
@@ -99,6 +150,9 @@ def client_empleado(db_session, monkeypatch):
     from app.database import db as db_module
 
     monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *a, **k: None)
+    # Tampoco se migra la base real al arrancar (los tests crean sus tablas solos).
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         try:
@@ -126,6 +180,9 @@ def client_sin_auth(db_session, monkeypatch):
     from app.database import db as db_module
 
     monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *a, **k: None)
+    # Tampoco se migra la base real al arrancar (los tests crean sus tablas solos).
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         try:
