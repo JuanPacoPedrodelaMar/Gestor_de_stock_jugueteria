@@ -22,7 +22,7 @@ def test_login_con_password_incorrecta_devuelve_401(client, crear_admin):
     )
 
     assert resp.status_code == 401
-    assert resp.json()["mensaje"] == "Email o contraseña incorrectos."
+    assert resp.json()["mensaje"] == "DNI/email o contraseña incorrectos."
 
 
 def test_login_con_email_inexistente_devuelve_401(client):
@@ -78,3 +78,57 @@ def test_login_usuario_inactivo_devuelve_401(client, db_session, crear_admin):
     resp = client.post("/api/v1/auth/login", json=crear_admin)
 
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Login con DNI y claim "dni" en el token
+# ---------------------------------------------------------------------------
+
+def test_login_con_dni_devuelve_tokens(client, crear_almacen):
+    resp = client.post("/api/v1/auth/login", json={"dni": "30222333", "password": "almacen123"})
+
+    assert resp.status_code == 200
+    assert resp.json()["access_token"]
+
+
+def test_login_con_dni_y_password_incorrecta_devuelve_401(client, crear_almacen):
+    resp = client.post("/api/v1/auth/login", json={"dni": "30222333", "password": "incorrecta1"})
+
+    assert resp.status_code == 401
+
+
+def test_login_con_dni_inexistente_devuelve_401(client, crear_almacen):
+    resp = client.post("/api/v1/auth/login", json={"dni": "39999999", "password": "almacen123"})
+
+    assert resp.status_code == 401
+
+
+def test_login_exige_dni_o_email_pero_no_ambos_ni_ninguno(client, crear_almacen):
+    sin_ninguno = client.post("/api/v1/auth/login", json={"password": "almacen123"})
+    ambos = client.post(
+        "/api/v1/auth/login",
+        json={"dni": "30222333", "email": "almacen@test.com", "password": "almacen123"},
+    )
+
+    assert sin_ninguno.status_code == 400
+    assert ambos.status_code == 400
+
+
+def test_el_access_token_lleva_el_dni_y_el_rol(client, crear_ventas):
+    from app.core.security import decodificar_token
+
+    login = client.post("/api/v1/auth/login", json={"dni": "30333444", "password": "ventas1234"}).json()
+    payload = decodificar_token(login["access_token"])
+
+    assert payload["dni"] == "30333444"
+    assert payload["rol"] == "ventas"
+
+
+def test_el_dni_tambien_se_bloquea_tras_demasiados_intentos(client, crear_almacen):
+    from app.core.redis_client import MAX_INTENTOS_FALLIDOS
+
+    for _ in range(MAX_INTENTOS_FALLIDOS):
+        client.post("/api/v1/auth/login", json={"dni": "30222333", "password": "incorrecta1"})
+    resp = client.post("/api/v1/auth/login", json={"dni": "30222333", "password": "almacen123"})
+
+    assert resp.status_code == 429

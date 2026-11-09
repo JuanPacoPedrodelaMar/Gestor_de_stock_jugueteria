@@ -43,8 +43,25 @@ Roles:
 
 | Rol | Acceso |
 |---|---|
-| `admin` | CRUD completo, incluido `DELETE` |
-| `empleado` | Listar, ver, crear y actualizar. **No** puede eliminar. |
+| `admin` | CRUD completo, `DELETE` sin restricciones y atender solicitudes de stock |
+| `almacen` | Listar, ver, **crear**; **eliminar solo lo que cargó él mismo durante los primeros 5 minutos**; pedir reposición de stock. **No** edita. |
+| `ventas` | Listar y ver. No crea, edita ni elimina. Sus movimientos sí ajustan el stock (vía `movimientos`). |
+| `mixto` | Lo de `almacen` y lo de `ventas`. |
+
+### Ventana de arrepentimiento para eliminar
+
+Cada producto guarda quién lo cargó (`creado_por`) y cuándo (`fecha_creacion`).
+Un `almacen` o `mixto` puede eliminar un producto **solo si lo cargó él mismo y
+hace menos de 5 minutos** (`PRODUCTO_COOLDOWN_BORRADO_SEGUNDOS`, por defecto
+300): sirve para deshacer una carga hecha por error. Pasado ese tiempo, o si lo
+cargó otra persona, recibe `403` con el motivo y solo un `admin` puede
+eliminarlo. Los productos anteriores a este campo (sin autor) también quedan
+solo para el admin. La eliminación sigue las reglas de siempre: con movimientos
+asociados es una baja lógica.
+
+Para que el panel sepa qué botón mostrar, cada producto de `GET` y `POST`
+incluye `puede_eliminar` y `segundos_restantes_eliminar`, calculados para quien
+consulta (el admin siempre puede y no tiene límite de tiempo).
 
 Ver `app/core/jwt_auth.py` para el mecanismo de validación.
 
@@ -52,15 +69,20 @@ Ver `app/core/jwt_auth.py` para el mecanismo de validación.
 
 | Método | Ruta | Descripción | Rol mínimo |
 |---|---|---|---|
-| GET | `/api/v1/productos` | Lista productos. Por defecto solo `activo=true`. `?incluir_inactivos=true` para ver también los dados de baja. | `empleado` |
-| GET | `/api/v1/productos/{id}` | Obtiene un producto por ID (activo o no). | `empleado` |
-| POST | `/api/v1/productos` | Crea un producto. Acepta `stock_actual` (default 0). | `empleado` |
-| PUT | `/api/v1/productos/{id}` | Actualiza datos descriptivos. **No acepta `stock_actual`** (ver más abajo). | `empleado` |
-| DELETE | `/api/v1/productos/{id}` | Elimina o da de baja según tenga movimientos asociados (ver más abajo). | `admin` |
-| PATCH | `/api/v1/productos/{id}/ajustar-stock` | Ajusta el stock atómicamente. **Endpoint interno**, consumido por `services/movimientos`. | `empleado` |
-| GET | `/api/v1/productos/ajustes/{clave}` | ¿Se aplicó un ajuste con esa `Idempotency-Key`? 200 o 404. Lo usa `movimientos` para reconciliar. | `empleado` |
+| GET | `/api/v1/productos` | Lista productos. Por defecto solo `activo=true`. `?incluir_inactivos=true` para ver también los dados de baja. | cualquiera |
+| GET | `/api/v1/productos/{id}` | Obtiene un producto por ID (activo o no). | cualquiera |
+| POST | `/api/v1/productos` | Crea un producto. Acepta `stock_actual` (default 0). Registra el autor. | `admin`, `almacen`, `mixto` |
+| PUT | `/api/v1/productos/{id}` | Actualiza datos descriptivos. **No acepta `stock_actual`** (ver más abajo). | `admin` |
+| DELETE | `/api/v1/productos/{id}` | Elimina o da de baja según tenga movimientos asociados (ver más abajo). Empleados: solo lo suyo y dentro de la ventana de 5 min. | `admin`, `almacen`*, `mixto`* |
+| PATCH | `/api/v1/productos/{id}/ajustar-stock` | Ajusta el stock atómicamente. **Endpoint interno**, consumido por `services/movimientos` con el token de quien registra el movimiento. | `admin`, `ventas`, `mixto` |
+| GET | `/api/v1/productos/ajustes/{clave}` | ¿Se aplicó un ajuste con esa `Idempotency-Key`? 200 o 404. Lo usa `movimientos` para reconciliar. | `admin`, `ventas`, `mixto` |
+| POST | `/api/v1/solicitudes-stock` | Pide reposición de un producto. **No cambia el stock**: es un aviso. | `almacen`, `mixto` |
+| GET | `/api/v1/solicitudes-stock?estado=` | Lista solicitudes (el admin ve todas; almacén y mixto, las propias). | `admin`, `almacen`, `mixto` |
+| PATCH | `/api/v1/solicitudes-stock/{id}` | Marca una solicitud pendiente como `atendida` o `rechazada` (`409` si ya estaba resuelta). | `admin` |
 | GET | `/health` | Healthcheck (sin auth). | — |
-| POST | `/api/v1/dev/seed-productos?cantidad=N` | Genera N productos de prueba. Solo desarrollo. | `empleado` |
+| POST | `/api/v1/dev/seed-productos?cantidad=N` | Genera N productos de prueba. Solo desarrollo. | `admin` |
+
+\* con las restricciones de la sección anterior (solo productos propios, durante la ventana).
 
 El contrato completo está exportado en [`openapi.json`](./openapi.json)
 (regenerarlo con `python export_openapi.py` tras cualquier cambio de
@@ -253,7 +275,7 @@ inventario.
   variable de entorno `HABILITAR_SEED_ENDPOINT=false` (ver
   `.env.example`) para no exponerlo en un entorno que no sea de
   desarrollo/pruebas.
-- Requiere estar autenticado (rol `empleado` o `admin`).
+- Solo el rol `admin` puede usarlo.
 
 ## Persistencia
 

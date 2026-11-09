@@ -1,8 +1,18 @@
 """
 Capa de Rutas para la entidad Movimiento.
 
-Todos los endpoints exigen un usuario autenticado (JWT válido). El token
-del usuario se propaga al servicio de Productos al ajustar el stock, para
+Todos los endpoints exigen un usuario autenticado (JWT válido). Quién puede qué:
+
+- registrar y consultar movimientos: admin, ventas y mixto (un empleado de
+  almacén NO registra movimientos: pide reposición en el servicio de Productos);
+- no existe edición ni borrado de movimientos para ningún rol (historial de
+  solo inserciones);
+- reconciliar pendientes: solo admin;
+- contar los movimientos de un producto: cualquier rol (lo consulta Productos,
+  con el token de quien elimina, para decidir entre borrado y baja lógica).
+
+El DNI del empleado de cada movimiento NO se pide: sale del claim "dni" del
+token de quien está logueado. El token del usuario se propaga al servicio de Productos al ajustar el stock, para
 que sea Productos quien aplique sus propias reglas de rol sobre ese usuario
 (no se usan credenciales de servicio).
 
@@ -27,6 +37,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.clients.clientes_client import ClientesClientError
 from app.clients.productos_client import ProductosClientError
 from app.core.jwt_auth import obtener_token_y_payload, requerir_rol
 from app.database.db import get_db
@@ -38,25 +49,31 @@ from app.schemas.movimiento import (
     ReconciliacionOut,
 )
 from app.services import movimiento_service
-from app.services.movimiento_service import ERRORES_DEFINITIVOS, IdempotencyKeyReutilizada
+from app.services.movimiento_service import (
+    ERRORES_DEFINITIVOS,
+    IdempotencyKeyReutilizada,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["Movimientos"])
+
+ROLES_MOVIMIENTOS = ("admin", "ventas", "mixto")
 
 
 @router.post("/movimientos", response_model=MovimientoOut, status_code=status.HTTP_201_CREATED)
 def crear_movimiento(
     movimiento: MovimientoCreate,
     db: Session = Depends(get_db),
-    credenciales: tuple[str, dict] = Depends(obtener_token_y_payload),
+    credenciales: tuple[str, dict] = Depends(requerir_rol(*ROLES_MOVIMIENTOS)),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key", max_length=100),
 ):
     """
     POST /api/v1/movimientos -> 201 Created.
 
-    Requiere usuario autenticado (cualquier rol). El token se reenvía a
-    Productos para que aplique sus reglas de rol (admin o empleado).
+    Requiere rol admin, ventas o mixto (403 para almacén). El empleado
+    registrado en el movimiento es el DNI del token, no un dato del pedido. El
+    token se reenvía a Productos para que aplique sus propias reglas de rol.
 
     Si se envía el header Idempotency-Key y ya existe un movimiento con esa
     clave, se devuelve ese movimiento sin volver a ajustar el stock (si estaba
@@ -67,10 +84,15 @@ def crear_movimiento(
     definitivos y no dejan nada registrado. 401/403/502/503 dejan el movimiento
     `pendiente`: el mensaje lo aclara y reintentar con la misma clave lo completa.
     """
-    token, _ = credenciales
+    token, payload = credenciales
 
     try:
-        nuevo = movimiento_service.registrar_movimiento(db, movimiento, token, idempotency_key)
+        nuevo = movimiento_service.registrar_movimiento(
+            db, movimiento, token, idempotency_key, dni_empleado=payload.get("dni")
+        )
+    except ClientesClientError as error:
+        # 404 (el cliente no existe) o 503 (Clientes no responde): no se registró nada.
+        raise HTTPException(status_code=error.status_code, detail=error.mensaje)
     except IdempotencyKeyReutilizada as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     except ProductosClientError as error:
@@ -121,11 +143,17 @@ def reconciliar_movimientos_pendientes(
 
 @router.get("/movimientos", response_model=List[MovimientoOut], status_code=status.HTTP_200_OK)
 def listar_movimientos(
+    id_cliente: Optional[int] = Query(
+        None, ge=1, description="Si se indica, solo los movimientos de ese cliente (su historial)."
+    ),
     db: Session = Depends(get_db),
-    _credenciales: tuple[str, dict] = Depends(obtener_token_y_payload),
+    _credenciales: tuple[str, dict] = Depends(requerir_rol(*ROLES_MOVIMIENTOS)),
 ):
-    """GET /api/v1/movimientos -> 200 OK con el listado completo (más reciente primero)."""
-    return movimiento_service.listar_movimientos(db)
+    """
+    GET /api/v1/movimientos -> 200 OK con el listado completo (más reciente
+    primero). Con `?id_cliente=N`, solo los de ese cliente.
+    """
+    return movimiento_service.listar_movimientos(db, id_cliente)
 
 
 @router.get(
@@ -136,7 +164,7 @@ def listar_movimientos(
 def listar_movimientos_de_producto(
     id_producto: int,
     db: Session = Depends(get_db),
-    _credenciales: tuple[str, dict] = Depends(obtener_token_y_payload),
+    _credenciales: tuple[str, dict] = Depends(requerir_rol(*ROLES_MOVIMIENTOS)),
 ):
     """GET /api/v1/productos/{id}/movimientos -> 200 OK con los movimientos de ese producto."""
     return movimiento_service.listar_movimientos_por_producto(db, id_producto)

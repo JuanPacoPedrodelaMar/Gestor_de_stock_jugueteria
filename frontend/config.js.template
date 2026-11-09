@@ -4,11 +4,14 @@ window.APP_CONFIG = {
   PRODUCTOS_API_URL: "${PRODUCTOS_API_URL}",
   AUTH_API_URL: "${AUTH_API_URL}",
   MOVIMIENTOS_API_URL: "${MOVIMIENTOS_API_URL}",
+  CLIENTES_API_URL: "${CLIENTES_API_URL}",
   // Acceso rápido por rol (solo entorno de pruebas). Si HABILITAR_USUARIOS_PRUEBA
   // no es "true", el entrypoint deja acá "false" y credenciales vacías.
   USUARIOS_PRUEBA: {
     habilitado: "${HABILITAR_USUARIOS_PRUEBA}" === "true",
-    admin: { email: "${PRUEBA_ADMIN_EMAIL}", password: "${PRUEBA_ADMIN_PASSWORD}" },
-    empleado: { email: "${PRUEBA_EMPLEADO_EMAIL}", password: "${PRUEBA_EMPLEADO_PASSWORD}" }
+    admin: { email: "${PRUEBA_ADMIN_EMAIL}", dni: "${PRUEBA_ADMIN_DNI}", password: "${PRUEBA_ADMIN_PASSWORD}" },
+    almacen: { email: "${PRUEBA_ALMACEN_EMAIL}", dni: "${PRUEBA_ALMACEN_DNI}", password: "${PRUEBA_ALMACEN_PASSWORD}" },
+    ventas: { email: "${PRUEBA_VENTAS_EMAIL}", dni: "${PRUEBA_VENTAS_DNI}", password: "${PRUEBA_VENTAS_PASSWORD}" },
+    mixto: { email: "${PRUEBA_MIXTO_EMAIL}", dni: "${PRUEBA_MIXTO_DNI}", password: "${PRUEBA_MIXTO_PASSWORD}" }
   }
 };

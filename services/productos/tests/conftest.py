@@ -91,7 +91,20 @@ def _payload_admin_fake():
 
 
 def _payload_empleado_fake():
-    return {"sub": "2", "email": "empleado@test.com", "rol": "empleado", "tipo": "access", "jti": "jti-fake-empleado"}
+    """Empleado mixto (el sucesor del antiguo rol "empleado")."""
+    return payload_de("mixto", sub="2")
+
+
+def payload_de(rol, sub="1", dni=None):
+    """Payload de un access token ya validado, para simular a un usuario de ese rol."""
+    return {
+        "sub": str(sub),
+        "email": f"{rol}{sub}@test.com",
+        "rol": rol,
+        "dni": dni or f"3000000{sub}",
+        "tipo": "access",
+        "jti": f"jti-fake-{rol}-{sub}",
+    }
 
 
 @pytest.fixture()
@@ -106,6 +119,9 @@ def client(db_session, monkeypatch):
     from app.database import db as db_module
 
     monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *a, **k: None)
+    # Tampoco se migra la base real al arrancar (los tests crean sus tablas solos).
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         try:
@@ -117,6 +133,12 @@ def client(db_session, monkeypatch):
     app.dependency_overrides[obtener_usuario_actual] = _payload_admin_fake
 
     with TestClient(app) as test_client:
+        def como(rol, sub="1", dni=None):
+            """Cambia el usuario autenticado a mitad de un test (otro rol u otra persona)."""
+            app.dependency_overrides[obtener_usuario_actual] = lambda: payload_de(rol, sub, dni)
+            return test_client
+
+        test_client.como = como
         yield test_client
 
     app.dependency_overrides.clear()
@@ -128,6 +150,9 @@ def client_empleado(db_session, monkeypatch):
     from app.database import db as db_module
 
     monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *a, **k: None)
+    # Tampoco se migra la base real al arrancar (los tests crean sus tablas solos).
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         try:
@@ -155,6 +180,9 @@ def client_sin_auth(db_session, monkeypatch):
     from app.database import db as db_module
 
     monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *a, **k: None)
+    # Tampoco se migra la base real al arrancar (los tests crean sus tablas solos).
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "migrar_esquema", lambda *a, **k: None)
 
     def override_get_db():
         try:

@@ -513,6 +513,56 @@
     background: #fff;
   }
 
+  /* --- Roles de empleado --- */
+  .btn-rol.almacen{ background: var(--naranja); color:#fff; }
+  .btn-rol.almacen small{ color:#ffe9de; }
+  .btn-rol.ventas{ background: var(--rosa); color:#fff; }
+  .btn-rol.ventas small{ color:#ffe6ee; }
+  .btn-rol.mixto{ background: var(--turquesa); color:#fff; }
+  .btn-rol.mixto small{ color:#e6fafa; }
+  .rol-almacen{ background:#FFE3D6; color:#B04A1B; }
+  .rol-ventas{ background:#FFE0EA; color:#B02A57; }
+  .rol-mixto{ background:#D9F3F3; color:#0E6E71; }
+  .acceso-rapido .fila .btn-rol{ flex: 1 1 200px; }
+
+  /* --- Avisos, sub-paneles y filas auxiliares --- */
+  .aviso-rol{
+    margin: 0 0 14px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: var(--warn-bg);
+    color: var(--warn-fg);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .sub-panel{
+    margin-top: 10px;
+    padding: 14px;
+    border: 2px dashed var(--linea);
+    border-radius: 12px;
+    background: #fffdf8;
+  }
+  .sub-panel .campo-grid{ margin-bottom: 4px; }
+  .fila-chica{ display:flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .fila-busqueda{ display:flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items:center; }
+  .fila-busqueda input{ flex: 1 1 260px; }
+  .campo-ancho{ grid-column: 1 / -1; }
+  .registra-como{ margin: 14px 0 0; font-size: 13px; color: #5b5270; }
+  .btn-eliminar-ventana{ font-variant-numeric: tabular-nums; }
+  .col-acciones{ white-space: nowrap; }
+  .subtitulo-panel{ margin: 0 0 12px; font-size: 13px; color:#6b6280; }
+
+  /* --- Estado de una solicitud de stock --- */
+  .badge-estado{
+    display:inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .badge-estado.pendiente{ background:#fff4d6; color:#8a5a00; }
+  .badge-estado.atendida{ background: var(--ok-bg); color: var(--ok-fg); }
+  .badge-estado.rechazada{ background: var(--danger-bg); color: var(--danger-fg); }
 </style>
 </head>
 <body>
@@ -520,7 +570,7 @@
 <header>
   <div>
     <h1>Mundo Juguetes <span>· Stock</span></h1>
-    <p>Panel interno de control de inventario — CRUD de Producto</p>
+    <p>Panel interno de inventario, movimientos y clientes</p>
   </div>
   <div class="usuario-actual">
     <span id="indicador-conexion" class="etiqueta stock-bajo">Verificando API…</span>
@@ -539,8 +589,9 @@
     <div id="login-error" class="estado"></div>
     <form id="form-login">
       <div class="campo-login">
-        <label>Email
-          <input type="email" id="login-email" required autocomplete="username" placeholder="tu@email.com">
+        <label>DNI o email
+          <input type="text" id="login-email" required maxlength="120" autocomplete="username" placeholder="Tu DNI (empleados) o tu email">
+          <small class="ayuda-campo">Los empleados entran con su DNI, solo números.</small>
         </label>
         <label>Contraseña
           <input type="password" id="login-password" required autocomplete="current-password" placeholder="••••••••">
@@ -554,15 +605,23 @@
     <!-- Solo se muestra si HABILITAR_USUARIOS_PRUEBA=true (ver config.js) -->
     <div id="acceso-rapido" class="acceso-rapido" style="display:none;">
       <h3>⚡ Acceso rápido — entorno de pruebas</h3>
-      <p>Entrá con un clic con cada rol. Solo disponible en desarrollo.</p>
+      <p>Entrá con un clic con cada rol (DNI y contraseña). Solo disponible en desarrollo.</p>
       <div class="fila">
         <button type="button" class="btn-rol admin" id="btn-rapido-admin">
-          👑 Entrar como Admin
+          👑 Administrador
           <small id="cred-admin"></small>
         </button>
-        <button type="button" class="btn-rol empleado" id="btn-rapido-empleado">
-          🧸 Entrar como Empleado
-          <small id="cred-empleado"></small>
+        <button type="button" class="btn-rol almacen" id="btn-rapido-almacen">
+          📦 Empleado de almacén
+          <small id="cred-almacen"></small>
+        </button>
+        <button type="button" class="btn-rol ventas" id="btn-rapido-ventas">
+          🛍️ Atención al cliente
+          <small id="cred-ventas"></small>
+        </button>
+        <button type="button" class="btn-rol mixto" id="btn-rapido-mixto">
+          🧸 Empleado mixto
+          <small id="cred-mixto"></small>
         </button>
       </div>
     </div>
@@ -576,12 +635,14 @@
   <div class="tabs">
     <button type="button" class="tab-btn activo" id="tab-btn-productos">📦 Inventario</button>
     <button type="button" class="tab-btn" id="tab-btn-movimientos">🔄 Movimientos</button>
+    <button type="button" class="tab-btn" id="tab-btn-clientes">👥 Clientes</button>
   </div>
 
   <div id="vista-productos" class="vista activa">
 
-  <section class="panel">
+  <section class="panel" id="panel-form-producto">
     <h2 id="titulo-form">➕ Nuevo producto</h2>
+    <p class="aviso-rol" id="aviso-ventana" style="display:none;">⏱️ Si cargás un producto por error, podés eliminarlo desde la tabla durante los primeros <strong>5 minutos</strong>. Pasado ese tiempo solo lo puede eliminar un administrador.</p>
     <details class="guia" id="guia-producto">
       <summary>📘 ¿Cómo cargo un producto? Guía rápida con ejemplo</summary>
       <ol>
@@ -589,14 +650,14 @@
         <li>Presioná <strong>Guardar producto</strong> <u>una sola vez</u>. Mientras se procesa, el botón muestra un círculo giratorio y se bloquea: esperá el mensaje verde de confirmación.</li>
         <li>Si algún dato no es válido, aparece un mensaje en rojo <strong>debajo del campo</strong> que hay que corregir. Corregilo y volvé a guardar.</li>
         <li>Si aparece un aviso de conexión o demora, <strong>no vuelvas a cargarlo enseguida</strong>: revisá primero la tabla de Inventario para ver si el producto ya se guardó.</li>
-        <li>Para modificar un producto usá <strong>Editar</strong> en la tabla. El stock actual no se cambia desde acá: se ajusta con un movimiento (pestaña Movimientos).</li>
+        <li>Si lo cargaste por error, usá <strong>Eliminar</strong> en la tabla: tenés <strong>5 minutos</strong> desde que lo cargaste (el botón muestra el tiempo que queda). Después solo un administrador puede eliminarlo o <strong>editarlo</strong>. El stock actual no se cambia desde acá: se ajusta con un movimiento.</li>
       </ol>
       <table class="guia-tabla">
         <thead><tr><th>Campo</th><th>¿Obligatorio?</th><th>Regla</th><th>Ejemplo</th></tr></thead>
         <tbody>
           <tr><td>Nombre</td><td>Sí</td><td>Hasta 120 caracteres, no puede quedar vacío</td><td>Muñeca Bebota</td></tr>
           <tr><td>Marca</td><td>No</td><td>Hasta 80 caracteres</td><td>Playkids</td></tr>
-          <tr><td>Categoría</td><td>No</td><td>Hasta 60 caracteres</td><td>Muñecas</td></tr>
+          <tr><td>Categoría</td><td>No</td><td>Hasta 60 caracteres. Elegí una de la lista o escribí una nueva</td><td>Muñecas</td></tr>
           <tr><td>Precio de venta</td><td>Sí</td><td>Número de 0 en adelante, con hasta 2 decimales</td><td>12500.50</td></tr>
           <tr><td>Stock actual</td><td>Sí (al crear)</td><td>Número entero de 0 en adelante</td><td>20</td></tr>
           <tr><td>Stock mínimo</td><td>Sí</td><td>Número entero de 0 en adelante</td><td>5</td></tr>
@@ -630,10 +691,13 @@
           <div class="rotulo-fila">
             <label for="categoria">Categoría</label>
             <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Categoría»?" aria-describedby="tip-categoria">?</button>
-            <span class="tooltip" role="tooltip" id="tip-categoria">Tipo o rubro del juguete, para agrupar productos parecidos. Podés dejarlo vacío. Ej: Muñecas, Peluches, Juegos de mesa.</span>
+            <span class="tooltip" role="tooltip" id="tip-categoria">Tipo o rubro del juguete, para agrupar productos parecidos. Elegí una categoría que ya exista en la lista o escribí una nueva. Podés dejarlo vacío. Ej: Muñecas, Peluches, Juegos de mesa.</span>
           </div>
-          <input type="text" id="categoria" maxlength="60" placeholder="Ej: Muñecas" aria-describedby="ayuda-categoria">
-          <small class="ayuda-campo" id="ayuda-categoria">Opcional, hasta 60 caracteres. Ej: Muñecas</small>
+          <div class="dropdown" id="categoria-dropdown">
+            <input type="text" id="categoria" maxlength="60" autocomplete="off" placeholder="Elegí o escribí una categoría" aria-describedby="ayuda-categoria">
+            <div class="dropdown-lista" id="categoria-lista" hidden></div>
+          </div>
+          <small class="ayuda-campo" id="ayuda-categoria">Opcional, hasta 60 caracteres. Elegí una de la lista o escribí una nueva. Ej: Muñecas</small>
         </div>
         <div class="campo">
           <div class="rotulo-fila">
@@ -677,7 +741,7 @@
   <section class="panel">
     <div class="encabezado-inventario">
       <h2>📦 Inventario</h2>
-      <div class="acciones-dev">
+      <div class="acciones-dev" id="acciones-dev">
         <label class="etiqueta-inline" for="cantidad-seed">Cantidad</label>
         <input type="number" id="cantidad-seed" min="1" max="200" value="20" title="Cantidad de productos de prueba a generar (1-200)" inputmode="numeric">
         <button type="button" id="btn-seed" class="btn-secundario">🎲 Cargar datos de prueba</button>
@@ -709,6 +773,50 @@
     </table>
   </section>
 
+  <section class="panel" id="panel-solicitudes" style="display:none;">
+    <h2>📨 Solicitudes de stock</h2>
+    <p class="subtitulo-panel" id="ayuda-solicitudes"></p>
+    <form id="form-solicitud" style="display:none;">
+      <div class="campo-grid">
+        <div class="campo">
+          <label for="sol_producto_input">Producto</label>
+          <div class="dropdown" id="sol-producto-dropdown">
+            <input type="text" id="sol_producto_input" autocomplete="off" placeholder="Escribí para buscar..." required>
+            <div class="dropdown-lista" id="sol-productos-lista" hidden></div>
+          </div>
+          <small class="ayuda-campo">Elegilo de la lista de sugerencias.</small>
+        </div>
+        <div class="campo">
+          <label for="sol_cantidad">Cantidad a pedir</label>
+          <input type="number" id="sol_cantidad" min="1" max="100000" required placeholder="10" inputmode="numeric">
+          <small class="ayuda-campo">Unidades que hacen falta. Número entero.</small>
+        </div>
+        <div class="campo">
+          <label for="sol_nota">Nota (opcional)</label>
+          <input type="text" id="sol_nota" maxlength="200" placeholder="Ej: urgente para el sábado">
+          <small class="ayuda-campo">Hasta 200 caracteres.</small>
+        </div>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn-primario" id="btn-solicitar">Pedir reposición</button>
+      </div>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Fecha/hora</th>
+          <th>Producto</th>
+          <th>Cantidad</th>
+          <th>Pedido por (DNI)</th>
+          <th>Estado</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tabla-solicitudes"></tbody>
+    </table>
+  </section>
+
   </div>
 
   <div id="vista-movimientos" class="vista">
@@ -719,8 +827,8 @@
       <summary>📘 ¿Cómo registro un movimiento? Guía rápida con ejemplo</summary>
       <ol>
         <li>Elegí el <strong>Producto</strong>: escribí parte del nombre y tocá una opción de la lista (tiene que salir de la lista de sugerencias).</li>
-        <li>Elegí la <strong>Categoría</strong>: <strong>Venta</strong> y <strong>Estropeo</strong> restan stock; <strong>Ingreso</strong> y <strong>Devolución</strong> lo suman.</li>
-        <li>Escribí la <strong>Cantidad</strong> (número entero de 1 en adelante). Los DNI son opcionales: solo números, sin puntos.</li>
+        <li>Elegí la <strong>Categoría</strong> (podés escribir para filtrar la lista): <strong>Venta</strong> y <strong>Estropeo</strong> restan stock; <strong>Ingreso</strong> y <strong>Devolución</strong> lo suman.</li>
+        <li>Escribí la <strong>Cantidad</strong> (número entero de 1 en adelante). El <strong>Cliente</strong> es opcional: buscalo por ID, documento, email o teléfono, o creá uno con <strong>Cliente nuevo</strong>. El empleado que registra se completa solo con tu DNI.</li>
         <li>Presioná <strong>Registrar movimiento</strong> <u>una sola vez</u> y esperá el mensaje verde. El stock del producto se actualiza solo: no hace falta editarlo en Inventario.</li>
         <li>Si aparece <strong>"Stock insuficiente"</strong>, el aviso debajo de Cantidad indica cuántas unidades hay disponibles: ingresá esa cantidad o menos.</li>
         <li>Si aparece un aviso de conexión o demora, revisá el historial de abajo antes de volver a intentar, para confirmar si el movimiento ya quedó registrado.</li>
@@ -731,8 +839,8 @@
           <tr><td>Producto</td><td>Sí</td><td>Elegir una opción de la lista</td><td>#1 — Muñeca Bebota</td></tr>
           <tr><td>Categoría</td><td>Sí</td><td>Venta, Ingreso, Estropeo o Devolución</td><td>Venta</td></tr>
           <tr><td>Cantidad</td><td>Sí</td><td>Entero de 1 en adelante; en ventas y estropeos no puede superar el stock</td><td>2</td></tr>
-          <tr><td>DNI cliente</td><td>No</td><td>Solo números, hasta 8 dígitos</td><td>30123456</td></tr>
-          <tr><td>DNI empleado</td><td>No</td><td>Solo números, hasta 8 dígitos</td><td>28900111</td></tr>
+          <tr><td>Cliente</td><td>No</td><td>Uno ya registrado (se busca por ID, documento, email o teléfono) o uno nuevo. Cada cliente tiene un ID propio: el documento puede repetirse</td><td>#12 · 30123456</td></tr>
+          <tr><td>Empleado</td><td>—</td><td>No se completa: se toma de tu sesión (tu DNI)</td><td>—</td></tr>
         </tbody>
       </table>
       <button type="button" class="btn-secundario btn-chico" id="btn-ejemplo-movimiento">✨ Rellenar el formulario con un ejemplo</button>
@@ -757,14 +865,14 @@
           <div class="rotulo-fila">
             <label for="mov_categoria_input">Categoría</label>
             <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Categoría»?" aria-describedby="tip-mov_categoria_input">?</button>
-            <span class="tooltip" role="tooltip" id="tip-mov_categoria_input">Tipo de movimiento. Venta y Estropeo descuentan stock; Ingreso y Devolución lo suman.</span>
+            <span class="tooltip" role="tooltip" id="tip-mov_categoria_input">Tipo de movimiento. Podés escribir para filtrar la lista o elegir una opción. Venta y Estropeo descuentan stock; Ingreso y Devolución lo suman.</span>
           </div>
           <div class="dropdown" id="mov-categoria-dropdown">
-            <input type="text" id="mov_categoria_input" readonly
-                  placeholder="Elegí una categoría" required aria-describedby="ayuda-mov-categoria">
+            <input type="text" id="mov_categoria_input" autocomplete="off"
+                  placeholder="Escribí o elegí una categoría" required aria-describedby="ayuda-mov-categoria">
             <div class="dropdown-lista" id="mov-categorias-lista" hidden></div>
           </div>
-          <small class="ayuda-campo" id="ayuda-mov-categoria">Obligatorio. Venta y Estropeo restan stock; Ingreso y Devolución suman.</small>
+          <small class="ayuda-campo" id="ayuda-mov-categoria">Obligatorio. Escribí o elegí. Venta y Estropeo restan stock; Ingreso y Devolución suman.</small>
         </div>
         <div class="campo">
           <div class="rotulo-fila">
@@ -775,25 +883,45 @@
           <input type="number" id="mov_cantidad" min="1" required placeholder="1" inputmode="numeric" aria-describedby="ayuda-mov-cantidad">
           <small class="ayuda-campo" id="ayuda-mov-cantidad">Obligatorio. Número entero de 1 en adelante. Ej: 2</small>
         </div>
-        <div class="campo">
+        <div class="campo campo-ancho">
           <div class="rotulo-fila">
-            <label for="mov_dni_cliente">DNI cliente (opcional)</label>
-            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «DNI cliente (opcional)»?" aria-describedby="tip-mov_dni_cliente">?</button>
-            <span class="tooltip" role="tooltip" id="tip-mov_dni_cliente">Opcional. DNI de la persona que compra o devuelve: solo números, sin puntos, hasta 8 dígitos. Ej: 30123456.</span>
+            <label for="mov_cliente_input">Cliente (opcional)</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Cliente (opcional)»?" aria-describedby="tip-mov_cliente_input">?</button>
+            <span class="tooltip" role="tooltip" id="tip-mov_cliente_input">Opcional. Buscá un cliente ya registrado por su ID, documento, email o teléfono. Si es nuevo, usá «Cliente nuevo». Cada cliente tiene un ID propio, así que dos personas con el mismo documento no se confunden.</span>
           </div>
-          <input type="text" id="mov_dni_cliente" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 30123456" aria-describedby="ayuda-mov-dni-cliente">
-          <small class="ayuda-campo" id="ayuda-mov-dni-cliente">Opcional. Solo números, hasta 8 dígitos. Ej: 30123456</small>
-        </div>
-        <div class="campo">
-          <div class="rotulo-fila">
-            <label for="mov_dni_empleado">DNI empleado (opcional)</label>
-            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «DNI empleado (opcional)»?" aria-describedby="tip-mov_dni_empleado">?</button>
-            <span class="tooltip" role="tooltip" id="tip-mov_dni_empleado">Opcional. DNI del empleado que registra la operación: solo números, sin puntos, hasta 8 dígitos. Ej: 28900111.</span>
+          <div class="dropdown" id="mov-cliente-dropdown">
+            <input type="text" id="mov_cliente_input" maxlength="60" autocomplete="off" placeholder="Buscá por ID, documento, email o teléfono..." aria-describedby="ayuda-mov-cliente">
+            <div class="dropdown-lista" id="mov-clientes-lista" hidden></div>
           </div>
-          <input type="text" id="mov_dni_empleado" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 28900111" aria-describedby="ayuda-mov-dni-empleado">
-          <small class="ayuda-campo" id="ayuda-mov-dni-empleado">Opcional. Solo números, hasta 8 dígitos. Ej: 28900111</small>
+          <small class="ayuda-campo" id="ayuda-mov-cliente">Opcional. Elegilo de la lista de sugerencias o creá uno nuevo.</small>
+          <div class="fila-chica">
+            <button type="button" class="btn-secundario btn-chico" id="btn-nuevo-cliente-mov">➕ Cliente nuevo</button>
+            <button type="button" class="btn-secundario btn-chico" id="btn-quitar-cliente" style="display:none;">Quitar cliente</button>
+          </div>
+          <div class="sub-panel" id="nuevo-cliente-mov" style="display:none;">
+            <div class="campo-grid">
+              <div class="campo">
+                <label for="ncm_documento">Documento</label>
+                <input type="text" id="ncm_documento" maxlength="30" autocomplete="off" placeholder="DNI, pasaporte u otro">
+                <small class="ayuda-campo">Obligatorio. Puede repetirse.</small>
+              </div>
+              <div class="campo">
+                <label for="ncm_email">Email (opcional)</label>
+                <input type="text" id="ncm_email" maxlength="120" autocomplete="off" inputmode="email" placeholder="nombre@dominio.com">
+              </div>
+              <div class="campo">
+                <label for="ncm_telefono">Teléfono (opcional)</label>
+                <input type="text" id="ncm_telefono" maxlength="30" autocomplete="off" inputmode="tel" placeholder="+54 376 4123456">
+              </div>
+            </div>
+            <div class="fila-chica">
+              <button type="button" class="btn-primario btn-chico" id="btn-guardar-cliente-mov">Guardar cliente</button>
+              <button type="button" class="btn-secundario btn-chico" id="btn-cancelar-cliente-mov">Cancelar</button>
+            </div>
+          </div>
         </div>
       </div>
+      <p class="registra-como" id="mov-registra-como"></p>
       <div class="acciones-form">
         <button type="submit" class="btn-primario" id="btn-guardar-movimiento">Registrar movimiento</button>
       </div>
@@ -827,6 +955,73 @@
     </table>
   </section>
 
+  <div id="vista-clientes" class="vista">
+
+  <section class="panel">
+    <h2>🔎 Buscar cliente</h2>
+    <p class="subtitulo-panel">Buscá por ID, documento, email o teléfono. Sin texto se muestran los últimos clientes dados de alta. Un mismo documento puede aparecer más de una vez: cada cliente tiene su ID.</p>
+    <form id="form-buscar-cliente" class="fila-busqueda">
+      <input type="text" id="buscar_cliente_q" maxlength="60" autocomplete="off" placeholder="ID, documento, email o teléfono..." aria-label="Buscar cliente">
+      <button type="submit" class="btn-primario" id="btn-buscar-cliente">Buscar</button>
+      <button type="button" class="btn-secundario" id="btn-nuevo-cliente">➕ Cliente nuevo</button>
+    </form>
+
+    <form id="form-cliente-nuevo" class="sub-panel" style="display:none;">
+      <div class="campo-grid">
+        <div class="campo">
+          <label for="cli_documento">Documento</label>
+          <input type="text" id="cli_documento" maxlength="30" autocomplete="off" required placeholder="DNI, pasaporte u otro">
+          <small class="ayuda-campo">Obligatorio. Admite documentos de otros países y puede repetirse.</small>
+        </div>
+        <div class="campo">
+          <label for="cli_email">Email (opcional)</label>
+          <input type="text" id="cli_email" maxlength="120" autocomplete="off" inputmode="email" placeholder="nombre@dominio.com">
+          <small class="ayuda-campo">Opcional.</small>
+        </div>
+        <div class="campo">
+          <label for="cli_telefono">Teléfono (opcional)</label>
+          <input type="text" id="cli_telefono" maxlength="30" autocomplete="off" inputmode="tel" placeholder="+54 376 4123456">
+          <small class="ayuda-campo">Opcional. Con código de país si es de afuera.</small>
+        </div>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn-primario" id="btn-guardar-cliente">Guardar cliente</button>
+        <button type="button" class="btn-secundario" id="btn-cancelar-cliente">Cancelar</button>
+      </div>
+    </form>
+
+    <table>
+      <thead>
+        <tr>
+          <th>ID cliente</th>
+          <th>Documento</th>
+          <th>Email</th>
+          <th>Teléfono</th>
+          <th>Alta</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tabla-clientes"></tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="panel-detalle-cliente" style="display:none;">
+    <h2 id="titulo-detalle-cliente">🧾 Movimientos del cliente</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Fecha/hora</th>
+          <th>Categoría</th>
+          <th>Producto</th>
+          <th>Cantidad</th>
+          <th>Empleado (DNI)</th>
+        </tr>
+      </thead>
+      <tbody id="tabla-movimientos-cliente"></tbody>
+    </table>
+  </section>
+
   </div>
 
 </main>
@@ -836,29 +1031,52 @@
 <script src="config.js"></script>
 <script src="app.js"></script>
 <script src="movimientos.js"></script>
+<script src="clientes.js"></script>
+<script src="solicitudes.js"></script>
 <script>
-  // Alternar entre las vistas "Inventario" y "Movimientos".
-  const tabBtnProductos = document.getElementById("tab-btn-productos");
-  const tabBtnMovimientos = document.getElementById("tab-btn-movimientos");
-  const vistaProductos = document.getElementById("vista-productos");
-  const vistaMovimientos = document.getElementById("vista-movimientos");
+  // Alternar entre las vistas "Inventario", "Movimientos" y "Clientes".
+  // Cada pestaña se muestra solo si el rol del usuario la puede usar (app.js:
+  // aplicarPermisosDeRol oculta los botones que no corresponden).
+  const VISTAS_APP = {
+    productos: {
+      boton: "tab-btn-productos",
+      vista: "vista-productos",
+      cargar: () => { if (typeof cargarProductos === "function") cargarProductos(); },
+    },
+    movimientos: {
+      boton: "tab-btn-movimientos",
+      vista: "vista-movimientos",
+      cargar: () => {
+        if (typeof cargarOpcionesDeProductos === "function") cargarOpcionesDeProductos();
+        if (typeof cargarMovimientos === "function") cargarMovimientos();
+      },
+    },
+    clientes: {
+      boton: "tab-btn-clientes",
+      vista: "vista-clientes",
+      cargar: () => { if (typeof cargarClientes === "function") cargarClientes(); },
+    },
+  };
 
-  tabBtnProductos.addEventListener("click", () => {
-    tabBtnProductos.classList.add("activo");
-    tabBtnMovimientos.classList.remove("activo");
-    vistaProductos.classList.add("activa");
-    vistaMovimientos.classList.remove("activa");
-    if (typeof cargarProductos === "function") cargarProductos();
+  function activarVista(nombre) {
+    const destino = VISTAS_APP[nombre];
+    // Si la pestaña pedida está oculta para este rol, se vuelve a Inventario.
+    if (!destino || document.getElementById(destino.boton).style.display === "none") {
+      nombre = "productos";
+    }
+    Object.entries(VISTAS_APP).forEach(([clave, v]) => {
+      document.getElementById(v.boton).classList.toggle("activo", clave === nombre);
+      document.getElementById(v.vista).classList.toggle("activa", clave === nombre);
+    });
+    VISTAS_APP[nombre].cargar();
+  }
+
+  Object.entries(VISTAS_APP).forEach(([clave, v]) => {
+    document.getElementById(v.boton).addEventListener("click", () => activarVista(clave));
   });
 
-  tabBtnMovimientos.addEventListener("click", () => {
-    tabBtnMovimientos.classList.add("activo");
-    tabBtnProductos.classList.remove("activo");
-    vistaMovimientos.classList.add("activa");
-    vistaProductos.classList.remove("activa");
-    if (typeof cargarOpcionesDeProductos === "function") cargarOpcionesDeProductos();
-    if (typeof cargarMovimientos === "function") cargarMovimientos();
-  });
+  // Se arranca la sesión recién ahora, con todos los scripts ya cargados.
+  restaurarSesion();
 </script>
 </body>
 </html>

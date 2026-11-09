@@ -1,10 +1,10 @@
-# Levanta auth + productos + movimientos + frontend en Windows SIN Docker y SIN Redis
+# Levanta auth + productos + clientes + movimientos + frontend en Windows SIN Docker y SIN Redis
 # (usa un Redis en memoria). Requiere Python 3.10 a 3.13 (recomendado 3.12).
 # Nota: RabbitMQ y el worker de alertas NO corren en este modo. Los movimientos se
 # registran igual: el evento queda guardado en el outbox de Movimientos (no se publica
 # porque no hay broker; el relay esta desactivado aqui para no llenar el log de errores).
-# El logout SI invalida el token en los tres servicios: como cada uno tiene su propio
-# Redis en memoria, productos y movimientos le preguntan a auth si el token fue revocado.
+# El logout SI invalida el token en todos los servicios: como cada uno tiene su propio
+# Redis en memoria, productos, clientes y movimientos le preguntan a auth si el token fue revocado.
 # Si tenes Docker instalado, ejecutar_docker.ps1 levanta el sistema COMPLETO (con RabbitMQ
 # y el worker). Ambos scripts usan los mismos puertos: no los corras a la vez.
 #
@@ -12,7 +12,7 @@
 #   powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1            levanta el sistema y abre el navegador
 #   powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Tests     corre TODOS los tests y termina
 #   powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Bateria   corre solo la bateria de carga, sanitizacion
-#                                                                            y headers (productos y movimientos) y termina
+#                                                                            y headers (productos, movimientos y clientes) y termina
 #   powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Todo      corre todos los tests y, si pasan, levanta el sistema
 #
 # Los modos de tests no necesitan Docker, Redis, RabbitMQ ni activar un entorno virtual a mano: el
@@ -134,9 +134,9 @@ function Correr-Tests($nombre, $argumentos) {
 # ---------------------------------------------------------------------------
 if ($conTests) {
     if ($Bateria) {
-        $serviciosTest = @("productos", "movimientos")
+        $serviciosTest = @("productos", "movimientos", "clientes")
     } else {
-        $serviciosTest = @("auth", "productos", "movimientos", "worker-alertas")
+        $serviciosTest = @("auth", "productos", "movimientos", "clientes", "worker-alertas")
     }
 
     foreach ($s in $serviciosTest) { Preparar-Servicio $s $true $false }
@@ -154,6 +154,7 @@ if ($conTests) {
             if ($Bateria) {
                 # productos ya trae -v en su pytest.ini
                 if ($s -eq "productos") { $argsPytest = @("tests/test_bateria_minima.py") }
+                elseif ($s -eq "clientes") { $argsPytest = @("tests/test_sanitizacion_y_encabezados.py", "-v") }
                 else { $argsPytest = @("tests/test_bateria_minima.py", "-v") }
             } else {
                 $argsPytest = @()
@@ -193,7 +194,7 @@ if (-not $esWindows) {
 }
 
 # Puertos que necesita el proyecto
-foreach ($p in 8000, 8001, 8002, 8080) {
+foreach ($p in 8000, 8001, 8002, 8004, 8080) {
     $uso = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
     if ($uso) { Fallar "El puerto $p ya esta en uso. Cerra lo que lo use (o una ejecucion anterior) y reintenta." }
 }
@@ -201,6 +202,7 @@ foreach ($p in 8000, 8001, 8002, 8080) {
 Preparar-Servicio "auth" $false $true
 Preparar-Servicio "productos" $false $true
 Preparar-Servicio "movimientos" $false $true
+Preparar-Servicio "clientes" $false $true
 
 # config.js del frontend (URLs + botones de acceso rapido)
 @'
@@ -208,10 +210,13 @@ window.APP_CONFIG = {
   PRODUCTOS_API_URL: "http://localhost:8000",
   AUTH_API_URL: "http://localhost:8001",
   MOVIMIENTOS_API_URL: "http://localhost:8002",
+  CLIENTES_API_URL: "http://localhost:8004",
   USUARIOS_PRUEBA: {
     habilitado: true,
-    admin: { email: "admin@test.com", password: "admin12345" },
-    empleado: { email: "empleado@test.com", password: "empleado123" }
+    admin:   { email: "admin@test.com",   dni: "20000001", password: "admin12345" },
+    almacen: { email: "almacen@test.com", dni: "30000002", password: "almacen123" },
+    ventas:  { email: "ventas@test.com",  dni: "30000003", password: "ventas123" },
+    mixto:   { email: "mixto@test.com",   dni: "30000004", password: "mixto123" }
   }
 };
 '@ | Set-Content -Encoding UTF8 (Join-Path $raiz "frontend\config.js")
@@ -221,25 +226,31 @@ $comunes = "`$env:AUTH_SECRET_KEY='$secreto'; `$env:REDIS_URL='memory://';"
 $cmdAuth = "$comunes " +
   "`$env:HABILITAR_CONSULTA_REVOCACION='true'; " +
   "`$env:HABILITAR_USUARIOS_PRUEBA='true'; " +
-  "`$env:PRUEBA_ADMIN_EMAIL='admin@test.com'; `$env:PRUEBA_ADMIN_PASSWORD='admin12345'; " +
-  "`$env:PRUEBA_EMPLEADO_EMAIL='empleado@test.com'; `$env:PRUEBA_EMPLEADO_PASSWORD='empleado123'; " +
+  "`$env:PRUEBA_ADMIN_EMAIL='admin@test.com'; `$env:PRUEBA_ADMIN_PASSWORD='admin12345'; `$env:PRUEBA_ADMIN_DNI='20000001'; " +
+  "`$env:PRUEBA_ALMACEN_EMAIL='almacen@test.com'; `$env:PRUEBA_ALMACEN_PASSWORD='almacen123'; `$env:PRUEBA_ALMACEN_DNI='30000002'; " +
+  "`$env:PRUEBA_VENTAS_EMAIL='ventas@test.com'; `$env:PRUEBA_VENTAS_PASSWORD='ventas123'; `$env:PRUEBA_VENTAS_DNI='30000003'; " +
+  "`$env:PRUEBA_MIXTO_EMAIL='mixto@test.com'; `$env:PRUEBA_MIXTO_PASSWORD='mixto123'; `$env:PRUEBA_MIXTO_DNI='30000004'; " +
   "cd '$raiz\services\auth'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8001"
 
-# Productos y movimientos consultan a auth si un token fue revocado (logout) y
-# productos consulta a movimientos si un producto tiene historial antes de borrarlo.
+# Productos, clientes y movimientos consultan a auth si un token fue revocado (logout);
+# productos consulta a movimientos si un producto tiene historial antes de borrarlo y
+# movimientos consulta a clientes para validar el cliente de cada movimiento.
 $cmdProductos = "$comunes `$env:AUTH_SERVICE_URL='http://localhost:8001'; `$env:MOVIMIENTOS_SERVICE_URL='http://localhost:8002'; cd '$raiz\services\productos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
 
-$cmdMovimientos = "$comunes `$env:AUTH_SERVICE_URL='http://localhost:8001'; `$env:OUTBOX_RELAY_HABILITADO='false'; `$env:PRODUCTOS_SERVICE_URL='http://localhost:8000'; cd '$raiz\services\movimientos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8002"
+$cmdMovimientos = "$comunes `$env:AUTH_SERVICE_URL='http://localhost:8001'; `$env:OUTBOX_RELAY_HABILITADO='false'; `$env:PRODUCTOS_SERVICE_URL='http://localhost:8000'; `$env:CLIENTES_SERVICE_URL='http://localhost:8004'; cd '$raiz\services\movimientos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8002"
+
+$cmdClientes = "$comunes `$env:AUTH_SERVICE_URL='http://localhost:8001'; cd '$raiz\services\clientes'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8004"
 
 $cmdFront = "cd '$raiz\frontend'; & '$py' -m http.server 8080"
 
 # Cada servicio en su propia ventana (cerrala para detenerlo)
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdAuth
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdProductos
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdClientes
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdMovimientos
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdFront
 
-# Espera a que auth, productos y movimientos respondan antes de abrir el navegador
+# Espera a que auth, productos, clientes y movimientos respondan antes de abrir el navegador
 Write-Host "Esperando a que los servicios arranquen..."
 $listo = $false
 foreach ($i in 1..20) {
@@ -248,6 +259,7 @@ foreach ($i in 1..20) {
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://localhost:8001/health" | Out-Null
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://localhost:8000/health" | Out-Null
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://localhost:8002/health" | Out-Null
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://localhost:8004/health" | Out-Null
         $listo = $true
         break
     } catch { }
@@ -262,7 +274,8 @@ if ($listo) {
 Write-Host "  Auth (Swagger):      http://localhost:8001/docs"
 Write-Host "  Productos (Swagger): http://localhost:8000/docs"
 Write-Host "  Movimientos (Swagger): http://localhost:8002/docs"
+Write-Host "  Clientes (Swagger):    http://localhost:8004/docs"
 Write-Host "  (Sin RabbitMQ: los avisos de stock bajo no se procesan; los eventos quedan guardados en el outbox de Movimientos)" -ForegroundColor Yellow
-Write-Host "  Usuarios de prueba:  admin@test.com / admin12345  |  empleado@test.com / empleado123"
+Write-Host "  Usuarios de prueba (se entra con el DNI):  admin 20000001 / admin12345  |  almacen 30000002 / almacen123  |  ventas 30000003 / ventas123  |  mixto 30000004 / mixto123"
 Write-Host "  Tests:               .\ejecutar_local.ps1 -Tests   (todos)   |   .\ejecutar_local.ps1 -Bateria   (carga, sanitizacion y headers)"
 Start-Process "http://localhost:8080"

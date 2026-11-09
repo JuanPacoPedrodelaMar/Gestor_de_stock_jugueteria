@@ -25,7 +25,7 @@ jobs:
       # Que falle un servicio no cancela a los demás: se ve qué falla en cada uno.
       fail-fast: false
       matrix:
-        service: [auth, productos, movimientos, worker-alertas]
+        service: [auth, productos, movimientos, clientes, worker-alertas]
 
     defaults:
       run:
@@ -65,7 +65,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # auth y productos separan las deps de test en requirements-dev.txt;
-          # movimientos y worker-alertas ya traen pytest en requirements.txt.
+          # movimientos, clientes y worker-alertas ya traen pytest en requirements.txt.
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
           else

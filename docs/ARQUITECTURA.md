@@ -12,12 +12,14 @@ flowchart LR
         FE["frontend (nginx)<br/>puerto 8080"]
         AUTH["services/auth (FastAPI)<br/>puerto 8001"]
         PROD["services/productos (FastAPI)<br/>puerto 8000"]
+        CLI["services/clientes (FastAPI)<br/>puerto 8004"]
         MOV["services/movimientos (FastAPI)<br/>puerto 8002"]
         WORKER["services/worker-alertas<br/>(consumidor RabbitMQ)"]
         REDIS[("Redis<br/>blacklist de tokens")]
         RABBIT[("RabbitMQ<br/>exchange stock.events")]
         DB_AUTH[("SQLite<br/>auth_data")]
         DB_PROD[("SQLite<br/>productos_data")]
+        DB_CLI[("SQLite<br/>clientes_data")]
         DB_MOV[("SQLite<br/>movimientos_data")]
         DB_ALERTAS[("SQLite<br/>alertas_data")]
     end
@@ -25,19 +27,23 @@ flowchart LR
     Browser -->|HTTP| FE
     FE -->|"login / refresh"| AUTH
     FE -->|"CRUD productos"| PROD
+    FE -->|"alta / búsqueda de clientes"| CLI
     FE -->|"registrar / listar movimientos"| MOV
 
     AUTH --> REDIS
     PROD --> REDIS
+    CLI --> REDIS
     MOV --> REDIS
 
     MOV -->|"PATCH /ajustar-stock<br/>(token del usuario + Idempotency-Key)"| PROD
+    MOV -->|"GET /clientes/{id}<br/>(valida el id_cliente, token del usuario)"| CLI
     PROD -->|"GET .../movimientos/cantidad<br/>(antes de borrar un producto)"| MOV
     MOV -->|"outbox -> publish<br/>movimiento.registrado"| RABBIT
     RABBIT -->|"consume"| WORKER
 
     AUTH -->|"persiste usuarios"| DB_AUTH
     PROD --> DB_PROD
+    CLI --> DB_CLI
     MOV --> DB_MOV
     WORKER --> DB_ALERTAS
 ```
@@ -52,6 +58,12 @@ dependencias y (cuando corresponde) su propia base de datos:
   blacklist de tokens revocados, y expone un endpoint atómico e idempotente
   de ajuste de stock que consume `movimientos`. Antes de borrar un producto
   le pregunta a `movimientos` si tiene historial.
+- **`clientes`**: dueño de los clientes (ID propio, documento libre y repetible,
+  email y teléfono opcionales). Valida JWT localmente como los demás. No
+  conoce a `movimientos`: es `movimientos` quien lo consulta para validar el
+  `id_cliente` de cada movimiento y guardar una copia del documento, así el
+  historial no depende de que `clientes` esté disponible. Los movimientos sin
+  cliente tampoco dependen de él.
 - **`movimientos`**: registra el histórico de movimientos (solo inserciones).
   Orquesta la actualización de stock llamando a `productos` por REST
   (nunca lee su base directamente) mediante una saga con recuperación hacia
@@ -231,7 +243,7 @@ flowchart LR
 
 - **Validación de entrada.** `productos` rechaza en nombre, marca y categoría
   los caracteres `<` `>` `;` `=` `{` `}` `\`, el acento grave y los de control;
-  `movimientos` exige que los DNI sean de 1 a 8 dígitos. El filtro es una
+  `movimientos` acota los caracteres de documento, email y teléfono de un cliente (sin exigir formato de DNI). El filtro es una
   capa adicional: la defensa principal contra la inyección SQL son las
   consultas con parámetros enlazados de SQLAlchemy. En `productos` se
   aplica solo a los schemas de entrada (`ProductoEntrada`), no a
@@ -270,8 +282,8 @@ normalidad y su evento queda guardado en el outbox de `movimientos` (el relay
 que lo publicaría está desactivado en este modo), y por lo tanto no se procesan
 alertas de stock bajo.
 
-El logout **sí** invalida el token en los tres servicios: como cada uno tiene su
-propio Redis en memoria, `productos` y `movimientos` le preguntan a `auth`
+El logout **sí** invalida el token en los cuatro servicios: como cada uno tiene su
+propio Redis en memoria, `productos`, `clientes` y `movimientos` le preguntan a `auth`
 (`GET /api/v1/auth/tokens/{jti}/revocado`, habilitado solo con
 `HABILITAR_CONSULTA_REVOCACION=true`) si el token fue revocado. Es una llamada
 HTTP extra por request, solo en este modo; si `auth` no responde se deja pasar
@@ -428,7 +440,7 @@ A nivel de sistema completo, las más relevantes hoy son:
   todas. Ese ajuste todavía no está aplicado, y la prueba de 20 peticiones
   de la batería no llega a exponerlo.
 - **Seguridad pensada para desarrollo**: CORS abierto (`allow_origins=["*"]`)
-  en los tres servicios, tokens guardados en `localStorage`, JWT firmados con
+  en los cuatro servicios, tokens guardados en `localStorage`, JWT firmados con
   un secreto compartido (HS256) y credenciales por defecto (RabbitMQ y
   usuarios de prueba) documentadas. Sí hay validación de entrada y headers
   de seguridad en `productos` y `movimientos` (ver "Seguridad de entrada y

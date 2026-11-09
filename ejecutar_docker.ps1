@@ -1,5 +1,5 @@
 # Levanta TODO el sistema con Docker Compose desde Windows: redis, rabbitmq, auth,
-# productos, movimientos, worker-alertas y frontend. A diferencia de
+# productos, clientes, movimientos, worker-alertas y frontend. A diferencia de
 # ejecutar_local.ps1 (sin Docker, sin RabbitMQ ni worker), aca corre el sistema
 # completo: Redis compartido (el logout invalida el token en los tres servicios),
 # RabbitMQ y el worker de alertas.
@@ -19,7 +19,7 @@
 #      genera una aleatoria. Si ya existe NO la toca: cambiarla invalidaria las sesiones.
 #   4. Ejecuta "docker compose up -d --build" y espera a que los servicios respondan.
 #
-# Importante: usa los mismos puertos que ejecutar_local.ps1 (8000, 8001, 8002, 8080).
+# Importante: usa los mismos puertos que ejecutar_local.ps1 (8000, 8001, 8002, 8004, 8080).
 # Si lo tenias corriendo, cerra esas ventanas antes de usar este script.
 
 param(
@@ -84,7 +84,7 @@ if (-not (Funciona "docker" @("compose", "version"))) {
 if ($Detener -or $BorrarDatos) {
     $ErrorActionPreference = "Continue"
     if ($BorrarDatos) {
-        Write-Host "Esto detiene el sistema y BORRA todos los datos: productos, movimientos," -ForegroundColor Yellow
+        Write-Host "Esto detiene el sistema y BORRA todos los datos: productos, clientes, movimientos," -ForegroundColor Yellow
         Write-Host "usuarios, colas de RabbitMQ y la blacklist de tokens." -ForegroundColor Yellow
         $respuesta = Read-Host "Escribi SI (en mayusculas) para continuar"
         if ($respuesta -cne "SI") {
@@ -161,6 +161,7 @@ $ErrorActionPreference = "Stop"
 $puertoAuth = Leer-Env "AUTH_PORT" "8001"
 $puertoProductos = Leer-Env "PRODUCTOS_PORT" "8000"
 $puertoMovimientos = Leer-Env "MOVIMIENTOS_PORT" "8002"
+$puertoClientes = Leer-Env "CLIENTES_PORT" "8004"
 $puertoWorker = Leer-Env "WORKER_PORT" "8003"
 $puertoFrontend = Leer-Env "FRONTEND_PORT" "8080"
 $puertoRabbit = Leer-Env "RABBITMQ_MANAGEMENT_PORT" "15672"
@@ -169,6 +170,7 @@ $comprobaciones = @(
     @{ Nombre = "auth";           Url = "http://localhost:$puertoAuth/health" },
     @{ Nombre = "productos";      Url = "http://localhost:$puertoProductos/health" },
     @{ Nombre = "movimientos";    Url = "http://localhost:$puertoMovimientos/health" },
+    @{ Nombre = "clientes";       Url = "http://localhost:$puertoClientes/health" },
     @{ Nombre = "worker-alertas"; Url = "http://localhost:$puertoWorker/health" },
     @{ Nombre = "frontend";       Url = "http://localhost:$puertoFrontend/" }
 )
@@ -205,20 +207,29 @@ $rabbitUsuario = Leer-Env "RABBITMQ_DEFAULT_USER" "admin"
 $rabbitClave = Leer-Env "RABBITMQ_DEFAULT_PASS" "admin123"
 $adminEmail = Leer-Env "PRUEBA_ADMIN_EMAIL" "admin@test.com"
 $adminClave = Leer-Env "PRUEBA_ADMIN_PASSWORD" "admin12345"
-$empleadoEmail = Leer-Env "PRUEBA_EMPLEADO_EMAIL" "empleado@test.com"
-$empleadoClave = Leer-Env "PRUEBA_EMPLEADO_PASSWORD" "empleado123"
+$adminDni = Leer-Env "PRUEBA_ADMIN_DNI" "20000001"
+$almacenDni = Leer-Env "PRUEBA_ALMACEN_DNI" "30000002"
+$almacenClave = Leer-Env "PRUEBA_ALMACEN_PASSWORD" "almacen123"
+$ventasDni = Leer-Env "PRUEBA_VENTAS_DNI" "30000003"
+$ventasClave = Leer-Env "PRUEBA_VENTAS_PASSWORD" "ventas123"
+$mixtoDni = Leer-Env "PRUEBA_MIXTO_DNI" "30000004"
+$mixtoClave = Leer-Env "PRUEBA_MIXTO_PASSWORD" "mixto123"
 
 Write-Host ""
 Write-Host "  Frontend:                http://localhost:$puertoFrontend"
 Write-Host "  Auth (Swagger):          http://localhost:$puertoAuth/docs"
 Write-Host "  Productos (Swagger):     http://localhost:$puertoProductos/docs"
 Write-Host "  Movimientos (Swagger):   http://localhost:$puertoMovimientos/docs"
+Write-Host "  Clientes (Swagger):      http://localhost:$puertoClientes/docs"
 Write-Host "  Worker (healthcheck):    http://localhost:$puertoWorker/health"
 Write-Host "  RabbitMQ (panel):        http://localhost:$puertoRabbit   ($rabbitUsuario / $rabbitClave)"
 Write-Host ""
 Write-Host "  Usuarios de prueba (si HABILITAR_USUARIOS_PRUEBA=true, el valor por defecto):"
-Write-Host "    admin:    $adminEmail / $adminClave"
-Write-Host "    empleado: $empleadoEmail / $empleadoClave"
+Write-Host "    (se entra con el DNI; el admin tambien con su email)"
+Write-Host "    admin:               DNI $adminDni / $adminClave   (o $adminEmail)"
+Write-Host "    almacen:             DNI $almacenDni / $almacenClave"
+Write-Host "    atencion al cliente: DNI $ventasDni / $ventasClave"
+Write-Host "    mixto:               DNI $mixtoDni / $mixtoClave"
 Write-Host ""
 Write-Host "  Ver logs:         docker compose logs -f"
 Write-Host "  Ver las alertas:  docker compose logs -f worker-alertas"

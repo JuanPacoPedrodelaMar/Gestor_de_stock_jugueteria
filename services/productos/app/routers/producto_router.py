@@ -13,12 +13,23 @@ from app.core.jwt_auth import obtener_token_crudo, requerir_rol
 
 router = APIRouter(prefix="/api/v1/productos", tags=["Productos"])
 
+# Quién puede qué (ver README, "Roles"):
+#   leer el catálogo ........ todos los roles
+#   cargar productos ........ admin, almacen, mixto
+#   editar productos ........ solo admin
+#   eliminar ................ admin siempre; almacen/mixto solo lo que cargaron
+#                             ellos mismos y dentro de la ventana de arrepentimiento
+#   ajustar stock ........... admin, ventas, mixto (lo dispara un movimiento, que
+#                             reenvía el token de quien lo registra)
+ROLES_LECTURA = ("admin", "almacen", "ventas", "mixto")
+ROLES_ALTA = ("admin", "almacen", "mixto")
+ROLES_AJUSTE_STOCK = ("admin", "ventas", "mixto")
+
 
 @router.get(
     "",
     response_model=List[ProductoOut],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(requerir_rol("admin", "empleado"))],
 )
 def listar_productos(
     incluir_inactivos: bool = Query(
@@ -26,6 +37,7 @@ def listar_productos(
         description="Si es true, incluye también los productos dados de baja (activo=false).",
     ),
     db: Session = Depends(get_db),
+    payload: dict = Depends(requerir_rol(*ROLES_LECTURA)),
 ):
     """
     GET /api/v1/productos -> 200 OK con el listado.
@@ -33,17 +45,20 @@ def listar_productos(
     Por defecto solo devuelve productos activos. Usar
     ?incluir_inactivos=true para ver también los dados de baja.
 
-    Requiere autenticación (admin o empleado). Ver services/auth para el
-    login y app/core/jwt_auth.py para el mecanismo de validación del JWT.
+    Requiere autenticación (cualquier rol). Cada producto incluye
+    `puede_eliminar` y `segundos_restantes_eliminar` calculados para quien
+    consulta. Ver services/auth para el login y app/core/jwt_auth.py para el
+    mecanismo de validación del JWT.
     """
-    return producto_service.obtener_productos(db, incluir_inactivos=incluir_inactivos)
+    productos = producto_service.obtener_productos(db, incluir_inactivos=incluir_inactivos)
+    return [producto_service.producto_para(p, payload) for p in productos]
 
 
 @router.get(
     "/ajustes/{clave}",
     response_model=AjusteStockOut,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+    dependencies=[Depends(requerir_rol(*ROLES_AJUSTE_STOCK))],
 )
 def obtener_ajuste(clave: str, db: Session = Depends(get_db)):
     """
@@ -67,9 +82,12 @@ def obtener_ajuste(clave: str, db: Session = Depends(get_db)):
     "/{id_producto}",
     response_model=ProductoOut,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(requerir_rol("admin", "empleado"))],
 )
-def obtener_producto(id_producto: int, db: Session = Depends(get_db)):
+def obtener_producto(
+    id_producto: int,
+    db: Session = Depends(get_db),
+    payload: dict = Depends(requerir_rol(*ROLES_LECTURA)),
+):
     """
     GET /api/v1/productos/{id} -> 200 OK o 404 Not Found.
 
@@ -82,31 +100,38 @@ def obtener_producto(id_producto: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No se encontró un producto con id_producto={id_producto}.",
         )
-    return producto
+    return producto_service.producto_para(producto, payload)
 
 
 @router.post(
     "",
     response_model=ProductoOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(requerir_rol("admin", "empleado"))],
 )
-def crear_producto(producto: ProductoCreate, db: Session = Depends(get_db)):
+def crear_producto(
+    producto: ProductoCreate,
+    db: Session = Depends(get_db),
+    payload: dict = Depends(requerir_rol(*ROLES_ALTA)),
+):
     """
     POST /api/v1/productos -> 201 Created.
+
+    Queda registrado quién lo cargó y cuándo: es lo que habilita la ventana de
+    arrepentimiento para eliminarlo (ver DELETE).
     """
-    return producto_service.crear_producto(db, producto)
+    nuevo = producto_service.crear_producto(db, producto, creado_por=int(payload["sub"]))
+    return producto_service.producto_para(nuevo, payload)
 
 
 @router.put(
     "/{id_producto}",
     response_model=ProductoOut,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+    dependencies=[Depends(requerir_rol("admin"))],
 )
 def actualizar_producto(id_producto: int, producto: ProductoUpdate, db: Session = Depends(get_db)):
     """
-    PUT /api/v1/productos/{id} -> 200 OK o 404 Not Found.
+    PUT /api/v1/productos/{id} -> 200 OK o 404 Not Found. Solo admin.
 
     Actualiza únicamente los datos descriptivos del producto (nombre, marca,
     precio_venta, stock_minimo, categoria). NO modifica stock_actual bajo
@@ -125,20 +150,22 @@ def actualizar_producto(id_producto: int, producto: ProductoUpdate, db: Session 
 @router.delete(
     "/{id_producto}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(requerir_rol("admin"))],
 )
 def eliminar_producto(
     id_producto: int,
     response: Response,
     db: Session = Depends(get_db),
     token: Optional[str] = Depends(obtener_token_crudo),
+    payload: dict = Depends(requerir_rol(*ROLES_ALTA)),
 ):
     """
     DELETE /api/v1/productos/{id}.
 
-    Solo accesible por admin (issue #7): dar de baja o eliminar un
-    producto es una decisión más sensible que crearlo o editarlo, así que
-    se restringe más que el resto del CRUD.
+    Quién puede: un admin siempre. Un empleado de almacén o mixto, solo un
+    producto que cargó él mismo y durante los primeros minutos desde que lo
+    cargó (ventana de arrepentimiento, 5 min por defecto; ver
+    PRODUCTO_COOLDOWN_BORRADO_SEGUNDOS). Pasada la ventana solo un admin. En
+    cualquier otro caso: 403 con el motivo.
 
     Comportamiento (issue #6):
     - 204 No Content: el producto no tenía movimientos asociados y se
@@ -154,6 +181,16 @@ def eliminar_producto(
     "Tiene movimientos asociados" se resuelve consultando de verdad al
     servicio de Movimientos (con el token del admin que hace la baja).
     """
+    producto = producto_service.obtener_producto_por_id(db, id_producto)
+    if producto is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No se encontró un producto con id_producto={id_producto}.",
+        )
+    decision = producto_service.evaluar_borrado(producto, payload)
+    if not decision.permitido:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.motivo)
+
     try:
         eliminado = producto_service.eliminar_producto(db, id_producto, token)
     except MovimientosClientError as error:
@@ -184,7 +221,7 @@ def eliminar_producto(
     "/{id_producto}/ajustar-stock",
     response_model=ProductoOut,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+    dependencies=[Depends(requerir_rol(*ROLES_AJUSTE_STOCK))],
 )
 def ajustar_stock(
     id_producto: int,
@@ -201,9 +238,9 @@ def ajustar_stock(
     (ver producto_service.ajustar_stock_atomico), por lo que es seguro ante
     llamadas concurrentes: nunca deja stock_actual negativo.
 
-    Requiere rol admin o empleado, igual que el resto de los endpoints de
-    escritura. El servicio de Movimientos reenvía el JWT del usuario que
-    originó el movimiento.
+    Requiere rol admin, ventas o mixto (los que pueden registrar movimientos).
+    El servicio de Movimientos reenvía el JWT del usuario que originó el
+    movimiento, así que un empleado de almacén no puede ajustar stock.
 
     Idempotencia: si se envía el header opcional Idempotency-Key, el ajuste se
     aplica UNA sola vez por clave (la clave se guarda en la misma transacción

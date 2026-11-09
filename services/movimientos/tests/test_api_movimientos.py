@@ -18,11 +18,12 @@ from app.main import app
 _contador_jti = iter(range(1, 10_000))
 
 
-def _token(rol="empleado"):
+def _token(rol="mixto", dni="30111222"):
     claims = {
         "sub": "1",
         "email": f"{rol}@test.com",
         "rol": rol,
+        "dni": dni,
         "tipo": "access",
         "jti": f"jti-test-{next(_contador_jti)}",
         "exp": 4102444800,  # año 2100
@@ -30,8 +31,8 @@ def _token(rol="empleado"):
     return jwt.encode(claims, jwt_auth.SECRET_KEY, algorithm=jwt_auth.ALGORITHM)
 
 
-def _headers(rol="empleado", clave=None):
-    headers = {"Authorization": f"Bearer {_token(rol)}"}
+def _headers(rol="mixto", clave=None, dni="30111222"):
+    headers = {"Authorization": f"Bearer {_token(rol, dni)}"}
     if clave:
         headers["Idempotency-Key"] = clave
     return headers
@@ -154,7 +155,7 @@ def test_el_conteo_exige_autenticacion(client):
 
 # --- reconciliación -------------------------------------------------------------
 def test_reconciliar_es_solo_para_admin(client):
-    resp = client.post("/api/v1/movimientos/reconciliar", headers=_headers("empleado"))
+    resp = client.post("/api/v1/movimientos/reconciliar", headers=_headers("mixto"))
 
     assert resp.status_code == 403
 

@@ -12,7 +12,7 @@
           "Auth"
         ],
         "summary": "Login",
-        "description": "Autentica con email/password y devuelve un par de tokens (access +\nrefresh). Bloquea temporalmente tras demasiados intentos fallidos\nseguidos (ver app/core/redis_client.py).",
+        "description": "Autentica con DNI (empleados) o email, más la contraseña, y devuelve un\npar de tokens (access + refresh). Bloquea temporalmente tras demasiados\nintentos fallidos seguidos (ver app/core/redis_client.py).",
         "operationId": "login_api_v1_auth_login_post",
         "requestBody": {
           "content": {
@@ -240,7 +240,7 @@
           "Auth"
         ],
         "summary": "Crear Usuario",
-        "description": "Crea un usuario nuevo (admin o empleado). Solo accesible por un admin.",
+        "description": "Crea un usuario nuevo (admin, almacen, ventas o mixto). Solo accesible por un admin.",
         "operationId": "crear_usuario_api_v1_auth_usuarios_post",
         "requestBody": {
           "content": {
@@ -356,9 +356,28 @@
       "LoginRequest": {
         "properties": {
           "email": {
-            "type": "string",
-            "format": "email",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "email"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Email"
+          },
+          "dni": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]{7,8}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dni"
           },
           "password": {
             "type": "string",
@@ -367,10 +386,10 @@
         },
         "type": "object",
         "required": [
-          "email",
           "password"
         ],
-        "title": "LoginRequest"
+        "title": "LoginRequest",
+        "description": "Login con DNI (empleados) o con email (admin, o cualquier usuario). Hay que\nenviar uno de los dos."
       },
       "RefreshRequest": {
         "properties": {
@@ -389,10 +408,12 @@
         "type": "string",
         "enum": [
           "admin",
-          "empleado"
+          "almacen",
+          "ventas",
+          "mixto"
         ],
         "title": "RolUsuario",
-        "description": "Roles soportados en este proyecto (issue #7): dos roles, admin y\nempleado. admin tiene acceso a todo, incluida la consulta de auditoría;\nempleado puede operar productos/movimientos pero no ver la auditoría ni\ngestionar usuarios."
+        "description": "Roles del sistema:\n\n- admin: acceso total (incluida la auditoría y la gestión de usuarios).\n- almacen: empleado de depósito. Carga productos nuevos, puede eliminar un\n  producto que cargó él mismo durante los primeros minutos (ventana de\n  arrepentimiento) y solicita reposición de stock. No registra movimientos.\n- ventas: empleado de atención al cliente. Solo registra movimientos (no\n  puede editarlos ni borrarlos) y consulta clientes. No toca el catálogo.\n- mixto: suma los permisos de almacen y de ventas.\n\nEl rol genérico \"empleado\" que existía antes se migró a \"mixto\" (ver\napp/database/migraciones.py), que es el que conserva sus permisos."
       },
       "TokenResponse": {
         "properties": {
@@ -439,7 +460,20 @@
           },
           "rol": {
             "$ref": "#/components/schemas/RolUsuario",
-            "default": "empleado"
+            "default": "mixto"
+          },
+          "dni": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]{7,8}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dni",
+            "description": "DNI (7 u 8 dígitos). Obligatorio para los roles de empleado: es con lo que inician sesión."
           }
         },
         "type": "object",
@@ -472,6 +506,17 @@
           "activo": {
             "type": "boolean",
             "title": "Activo"
+          },
+          "dni": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dni"
           }
         },
         "type": "object",

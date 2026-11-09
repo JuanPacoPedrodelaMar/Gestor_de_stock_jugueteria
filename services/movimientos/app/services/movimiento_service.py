@@ -43,7 +43,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.clients import productos_client
+from app.clients import clientes_client, productos_client
 from app.clients.productos_client import ProductosClientError
 from app.messaging import outbox, publisher
 from app.models.movimiento import ESTADO_CONFIRMADO, ESTADO_PENDIENTE, Movimiento
@@ -82,14 +82,16 @@ def _buscar_por_clave(db: Session, idempotency_key: str) -> Optional[Movimiento]
     return db.query(Movimiento).filter(Movimiento.idempotency_key == idempotency_key).first()
 
 
-def _verificar_mismo_contenido(existente: Movimiento, datos: MovimientoCreate) -> Movimiento:
+def _verificar_mismo_contenido(
+    existente: Movimiento, datos: MovimientoCreate, dni_empleado: Optional[str] = None
+) -> Movimiento:
     """Una clave solo es un reintento legítimo si el pedido es el mismo."""
     mismo = (
         existente.categoria_movimiento == datos.categoria_movimiento
         and existente.cantidad_movida == datos.cantidad_movida
         and existente.id_producto == datos.id_producto
-        and existente.dni_cliente == datos.dni_cliente
-        and existente.dni_empleado == datos.dni_empleado
+        and existente.id_cliente == datos.id_cliente
+        and existente.dni_empleado == dni_empleado
     )
     if not mismo:
         raise IdempotencyKeyReutilizada(
@@ -100,7 +102,11 @@ def _verificar_mismo_contenido(existente: Movimiento, datos: MovimientoCreate) -
 
 
 def iniciar_movimiento(
-    db: Session, datos: MovimientoCreate, idempotency_key: Optional[str] = None
+    db: Session,
+    datos: MovimientoCreate,
+    idempotency_key: Optional[str] = None,
+    dni_empleado: Optional[str] = None,
+    cliente_documento: Optional[str] = None,
 ) -> Movimiento:
     """
     Paso 1 de la saga. Devuelve el movimiento a completar: uno recién creado
@@ -114,14 +120,15 @@ def iniciar_movimiento(
     if idempotency_key:
         existente = _buscar_por_clave(db, idempotency_key)
         if existente is not None:
-            return _verificar_mismo_contenido(existente, datos)
+            return _verificar_mismo_contenido(existente, datos, dni_empleado)
 
     nuevo = Movimiento(
         categoria_movimiento=datos.categoria_movimiento,
         cantidad_movida=datos.cantidad_movida,
         id_producto=datos.id_producto,
-        dni_cliente=datos.dni_cliente,
-        dni_empleado=datos.dni_empleado,
+        id_cliente=datos.id_cliente,
+        cliente_documento=cliente_documento,
+        dni_empleado=dni_empleado,
         estado=ESTADO_PENDIENTE,
         operacion_id=str(uuid.uuid4()),
         idempotency_key=idempotency_key,
@@ -134,7 +141,7 @@ def iniciar_movimiento(
         existente = _buscar_por_clave(db, idempotency_key) if idempotency_key else None
         if existente is None:
             raise
-        return _verificar_mismo_contenido(existente, datos)
+        return _verificar_mismo_contenido(existente, datos, dni_empleado)
     db.refresh(nuevo)
     return nuevo
 
@@ -203,19 +210,39 @@ def completar_movimiento(db: Session, movimiento: Movimiento, token: str) -> Mov
 
 
 def registrar_movimiento(
-    db: Session, datos: MovimientoCreate, token: str, idempotency_key: Optional[str] = None
+    db: Session,
+    datos: MovimientoCreate,
+    token: str,
+    idempotency_key: Optional[str] = None,
+    dni_empleado: Optional[str] = None,
 ) -> Movimiento:
     """
     Registra un movimiento de stock (ver el docstring del módulo para la saga).
 
+    `dni_empleado` es el DNI de quien registra (claim "dni" del token): lo pone
+    el servidor, nunca el usuario.
+
+    Si el movimiento trae `id_cliente`, se valida contra el servicio de Clientes
+    ANTES de registrar nada y se guarda una copia del documento del cliente.
+    Si es un reintento de un movimiento ya registrado (misma Idempotency-Key),
+    no se vuelve a consultar a Clientes: el resultado ya está resuelto.
+
     Puede levantar:
+      - ClientesClientError: 404 si el cliente no existe, 401/403 si el token no
+        sirve, 503/502 si Clientes no responde. No queda nada registrado ni se
+        toca el stock.
       - IdempotencyKeyReutilizada: la clave ya se usó con otro contenido.
       - ProductosClientError: 401/403 si el token no sirve, 404 si no existe el
         producto, 409 si no hay stock suficiente, 503/502 si Productos no
         responde. Con 404/409 no queda nada registrado; con el resto el
         movimiento queda `pendiente` y se puede reintentar con la misma clave.
     """
-    movimiento = iniciar_movimiento(db, datos, idempotency_key)
+    existente = _buscar_por_clave(db, idempotency_key) if idempotency_key else None
+    cliente_documento = None
+    if existente is None and datos.id_cliente is not None:
+        cliente_documento = clientes_client.obtener_cliente(datos.id_cliente, token)["documento"]
+
+    movimiento = iniciar_movimiento(db, datos, idempotency_key, dni_empleado, cliente_documento)
     return completar_movimiento(db, movimiento, token)
 
 
@@ -288,8 +315,12 @@ def obtener_movimiento_por_id(db: Session, id_movimiento: int):
     return db.query(Movimiento).filter(Movimiento.id_movimiento == id_movimiento).first()
 
 
-def listar_movimientos(db: Session):
-    return db.query(Movimiento).order_by(Movimiento.fecha_hora.desc()).all()
+def listar_movimientos(db: Session, id_cliente: Optional[int] = None):
+    """Todos los movimientos, el más reciente primero; opcionalmente solo los de un cliente."""
+    consulta = db.query(Movimiento)
+    if id_cliente is not None:
+        consulta = consulta.filter(Movimiento.id_cliente == id_cliente)
+    return consulta.order_by(Movimiento.fecha_hora.desc(), Movimiento.id_movimiento.desc()).all()
 
 
 def listar_movimientos_por_producto(db: Session, id_producto: int):

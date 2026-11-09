@@ -21,6 +21,7 @@ os.environ.setdefault("AUTH_SECRET_KEY", "clave-de-test-no-usar-en-produccion")
 # Los tests no arrancan el hilo que publica en RabbitMQ.
 os.environ["OUTBOX_RELAY_HABILITADO"] = "false"
 
+from app.clients.clientes_client import ClientesClientError  # noqa: E402
 from app.clients.productos_client import ProductosClientError  # noqa: E402
 from app.database.db import Base  # noqa: E402
 from app.models import movimiento as _m, outbox as _o  # noqa: E402,F401  (registran las tablas en Base)
@@ -122,6 +123,44 @@ def productos(monkeypatch):
     return falso
 
 
+class ClientesFalso:
+    """
+    Doble de prueba del servicio de Clientes. Sabe responder lo único que
+    Movimientos le pide (GET de un cliente por id) con la semántica real: 404 si
+    no existe, y se puede "romper" (`caido`) para simular que no responde.
+    """
+
+    def __init__(self):
+        self.clientes = {}  # id_cliente -> dict como lo devuelve Clientes
+        self.llamadas = []  # (id_cliente, token)
+        self.caido = False
+
+    def alta(self, documento="30123456", email=None, telefono=None):
+        id_cliente = len(self.clientes) + 1
+        self.clientes[id_cliente] = {
+            "id_cliente": id_cliente, "documento": documento, "email": email, "telefono": telefono,
+        }
+        return id_cliente
+
+    def obtener_cliente(self, id_cliente, token):
+        self.llamadas.append((id_cliente, token))
+        if self.caido:
+            raise ClientesClientError(503, "No se pudo conectar con el servicio de Clientes.")
+        if id_cliente not in self.clientes:
+            raise ClientesClientError(404, f"No existe un cliente con id_cliente={id_cliente}.")
+        return self.clientes[id_cliente]
+
+
+@pytest.fixture()
+def clientes(monkeypatch):
+    """Reemplaza el cliente HTTP de Clientes por el doble de prueba (sin clientes cargados)."""
+    from app.clients import clientes_client
+
+    falso = ClientesFalso()
+    monkeypatch.setattr(clientes_client, "obtener_cliente", falso.obtener_cliente)
+    return falso
+
+
 class PublicadorFalso:
     """Doble de prueba de RabbitMQ para el relay/outbox."""
 
@@ -158,13 +197,19 @@ def rabbit():
 # simulada). Se apoyan en las de arriba: la base temporal (SessionLocal) y el
 # doble de Productos (ProductosFalso).
 # ---------------------------------------------------------------------------
-PAYLOAD_ADMIN_FALSO = {
-    "sub": "1",
-    "email": "admin@test.com",
-    "rol": "admin",
-    "tipo": "access",
-    "jti": "jti-fake-admin",
-}
+def payload_de(rol, sub="1", dni=None):
+    """Payload de un access token ya validado, para simular a un usuario de ese rol."""
+    return {
+        "sub": str(sub),
+        "email": f"{rol}{sub}@test.com",
+        "rol": rol,
+        "dni": dni or f"2000000{sub}",
+        "tipo": "access",
+        "jti": f"jti-fake-{rol}-{sub}",
+    }
+
+
+PAYLOAD_ADMIN_FALSO = payload_de("admin", sub="1", dni="20000001")
 
 
 @pytest.fixture()
@@ -191,7 +236,7 @@ def productos_mock(monkeypatch):
 
 
 @pytest.fixture()
-def client(SessionLocal, productos_mock, monkeypatch):
+def client(SessionLocal, productos_mock, clientes, monkeypatch):
     """
     TestClient de la app real, con una sesión de base NUEVA por request (como
     en producción) y la autenticación simulada como admin (sin JWT reales ni
@@ -218,6 +263,12 @@ def client(SessionLocal, productos_mock, monkeypatch):
     app.dependency_overrides[obtener_token_y_payload] = lambda: (TOKEN_FALSO, PAYLOAD_ADMIN_FALSO)
 
     with TestClient(app) as test_client:
+        def como(rol, sub="1", dni=None):
+            """Cambia el usuario autenticado a mitad de un test (otro rol u otra persona)."""
+            app.dependency_overrides[obtener_token_y_payload] = lambda: (TOKEN_FALSO, payload_de(rol, sub, dni))
+            return test_client
+
+        test_client.como = como
         yield test_client
 
     app.dependency_overrides.clear()
@@ -225,11 +276,9 @@ def client(SessionLocal, productos_mock, monkeypatch):
 
 @pytest.fixture()
 def movimiento_payload():
-    """Payload válido mínimo para registrar un movimiento."""
+    """Payload válido mínimo para registrar un movimiento (sin cliente: es opcional)."""
     return {
         "categoria_movimiento": "venta",
         "cantidad_movida": 2,
         "id_producto": 1,
-        "dni_cliente": "30123456",
-        "dni_empleado": "20111222",
     }

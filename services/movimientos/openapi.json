@@ -12,7 +12,7 @@
           "Movimientos"
         ],
         "summary": "Crear Movimiento",
-        "description": "POST /api/v1/movimientos -> 201 Created.\n\nRequiere usuario autenticado (cualquier rol). El token se reenvía a\nProductos para que aplique sus reglas de rol (admin o empleado).\n\nSi se envía el header Idempotency-Key y ya existe un movimiento con esa\nclave, se devuelve ese movimiento sin volver a ajustar el stock (si estaba\npendiente, se completa ahora). Reutilizar la clave con un contenido\ndistinto devuelve 422.\n\nErrores: 404 (producto inexistente) y 409 (stock insuficiente) son\ndefinitivos y no dejan nada registrado. 401/403/502/503 dejan el movimiento\n`pendiente`: el mensaje lo aclara y reintentar con la misma clave lo completa.",
+        "description": "POST /api/v1/movimientos -> 201 Created.\n\nRequiere rol admin, ventas o mixto (403 para almacén). El empleado\nregistrado en el movimiento es el DNI del token, no un dato del pedido. El\ntoken se reenvía a Productos para que aplique sus propias reglas de rol.\n\nSi se envía el header Idempotency-Key y ya existe un movimiento con esa\nclave, se devuelve ese movimiento sin volver a ajustar el stock (si estaba\npendiente, se completa ahora). Reutilizar la clave con un contenido\ndistinto devuelve 422.\n\nErrores: 404 (producto inexistente) y 409 (stock insuficiente) son\ndefinitivos y no dejan nada registrado. 401/403/502/503 dejan el movimiento\n`pendiente`: el mensaje lo aclara y reintentar con la misma clave lo completa.",
         "operationId": "crear_movimiento_api_v1_movimientos_post",
         "security": [
           {
@@ -76,11 +76,32 @@
           "Movimientos"
         ],
         "summary": "Listar Movimientos",
-        "description": "GET /api/v1/movimientos -> 200 OK con el listado completo (más reciente primero).",
+        "description": "GET /api/v1/movimientos -> 200 OK con el listado completo (más reciente\nprimero). Con `?id_cliente=N`, solo los de ese cliente.",
         "operationId": "listar_movimientos_api_v1_movimientos_get",
         "security": [
           {
             "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id_cliente",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Si se indica, solo los movimientos de ese cliente (su historial).",
+              "title": "Id Cliente"
+            },
+            "description": "Si se indica, solo los movimientos de ese cliente (su historial)."
           }
         ],
         "responses": {
@@ -94,6 +115,16 @@
                     "$ref": "#/components/schemas/MovimientoOut"
                   },
                   "title": "Response Listar Movimientos Api V1 Movimientos Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -352,31 +383,18 @@
             "title": "Id Producto",
             "description": "ID del producto afectado (servicio de Productos)"
           },
-          "dni_cliente": {
+          "id_cliente": {
             "anyOf": [
               {
-                "type": "string",
-                "pattern": "^[0-9]{1,8}$"
+                "type": "integer",
+                "minimum": 1.0
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Dni Cliente",
-            "description": "DNI: solo dígitos, hasta 8"
-          },
-          "dni_empleado": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9]{1,8}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dni Empleado",
-            "description": "DNI: solo dígitos, hasta 8"
+            "title": "Id Cliente",
+            "description": "ID del cliente (opcional). Se crea en el servicio de Clientes (POST /api/v1/clientes)."
           }
         },
         "type": "object",
@@ -411,6 +429,29 @@
             "type": "integer",
             "title": "Id Producto"
           },
+          "id_cliente": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id Cliente"
+          },
+          "cliente_documento": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cliente Documento",
+            "description": "Documento del cliente al momento del movimiento (copia; el dato vivo está en Clientes)."
+          },
           "dni_cliente": {
             "anyOf": [
               {
@@ -420,7 +461,8 @@
                 "type": "null"
               }
             ],
-            "title": "Dni Cliente"
+            "title": "Dni Cliente",
+            "description": "Solo en movimientos anteriores a la tabla de clientes."
           },
           "dni_empleado": {
             "anyOf": [
@@ -431,7 +473,8 @@
                 "type": "null"
               }
             ],
-            "title": "Dni Empleado"
+            "title": "Dni Empleado",
+            "description": "DNI del empleado que lo registró (del token)."
           },
           "estado": {
             "type": "string",

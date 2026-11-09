@@ -54,7 +54,7 @@ const bloqueAccesoRapido = document.getElementById("acceso-rapido");
 // ---------------------------------------------------------------------------
 const CLAVE_SESION = "jugueteria.sesion";
 let sesion = null;          // { access, refresh }
-let usuarioActual = null;   // { id_usuario, email, nombre, rol, activo }
+let usuarioActual = null;   // { id_usuario, email, nombre, rol, activo, dni }
 let refrescoEnCurso = null; // promesa compartida: evita gastar dos veces el mismo refresh token
 
 function cargarSesionGuardada() {
@@ -73,8 +73,46 @@ function guardarSesion(nueva) {
   } catch (e) { /* almacenamiento no disponible: la sesión vive solo en memoria */ }
 }
 
-function esAdmin() {
-  return usuarioActual && usuarioActual.rol === "admin";
+// ---------------------------------------------------------------------------
+// Roles y permisos (espejo de lo que hace cada servicio del backend, que es
+// quien realmente los aplica: acá solo se decide qué se muestra).
+//   admin ..... todo.
+//   almacen ... carga productos, elimina los que cargó él durante 5 minutos y
+//               pide reposición de stock. No ve movimientos ni clientes.
+//   ventas .... registra movimientos y consulta clientes. No toca el catálogo.
+//   mixto ..... suma los permisos de almacen y ventas.
+// ---------------------------------------------------------------------------
+const ETIQUETA_ROL = {
+  admin: "Administrador",
+  almacen: "Almacén",
+  ventas: "Atención al cliente",
+  mixto: "Mixto",
+};
+
+function tieneRol(...roles) {
+  return Boolean(usuarioActual) && roles.includes(usuarioActual.rol);
+}
+const esAdmin = () => tieneRol("admin");
+const puedeCargarProductos = () => tieneRol("admin", "almacen", "mixto");
+const puedeEditarProductos = () => tieneRol("admin");
+const puedePedirStock = () => tieneRol("almacen", "mixto");
+const veSolicitudes = () => tieneRol("admin", "almacen", "mixto");
+const puedeRegistrarMovimientos = () => tieneRol("admin", "ventas", "mixto");
+const puedeVerClientes = () => tieneRol("admin", "ventas", "mixto");
+
+/** Muestra u oculta cada parte de la pantalla según el rol del usuario logueado. */
+function aplicarPermisosDeRol() {
+  const mostrar = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? "" : "none";
+  };
+  mostrar("panel-form-producto", puedeCargarProductos());
+  mostrar("aviso-ventana", tieneRol("almacen", "mixto"));
+  mostrar("acciones-dev", esAdmin());
+  mostrar("tab-btn-movimientos", puedeRegistrarMovimientos());
+  mostrar("tab-btn-clientes", puedeVerClientes());
+  mostrar("panel-solicitudes", veSolicitudes());
+  mostrar("form-solicitud", puedePedirStock());
 }
 
 async function refrescarSesion() {
@@ -122,6 +160,13 @@ async function apiFetch(url, opciones = {}) {
     resp = await fetch(url, armar());
   }
   if (resp.status === 401) {
+    // Si la persona ya cerró sesión mientras esta petición estaba en vuelo, el
+    // 401 es consecuencia de su propia salida: se descarta sin avisar nada.
+    if (!sesion) {
+      const err = new Error("Sesión cerrada");
+      err.sesionExpirada = true;
+      throw err;
+    }
     mostrarLogin("Tu sesión expiró. Iniciá sesión de nuevo.");
     const err = new Error("Sesión expirada");
     err.sesionExpirada = true;
@@ -130,9 +175,22 @@ async function apiFetch(url, opciones = {}) {
   return resp;
 }
 
+// Zonas con datos que dependen de quién está logueado: se vacían al salir para
+// que la siguiente persona que use el equipo no vea lo de la anterior.
+const ZONAS_PRIVADAS = [
+  "tabla-productos", "tabla-movimientos", "tabla-clientes", "tabla-movimientos-cliente", "tabla-solicitudes",
+];
+
 function mostrarLogin(mensaje = "") {
   guardarSesion(null);
   usuarioActual = null;
+  ZONAS_PRIVADAS.forEach((id) => {
+    const zona = document.getElementById(id);
+    if (zona) zona.innerHTML = "";
+  });
+  if (typeof limpiarClienteElegido === "function") limpiarClienteElegido();
+  const detalle = document.getElementById("panel-detalle-cliente");
+  if (detalle) detalle.style.display = "none";
   appPrincipal.style.display = "none";
   infoUsuario.style.display = "none";
   btnLogout.style.display = "none";
@@ -150,22 +208,46 @@ function mostrarApp() {
   pantallaLogin.style.display = "none";
   appPrincipal.style.display = "block";
   usuarioNombre.textContent = usuarioActual.nombre;
-  usuarioRol.textContent = usuarioActual.rol;
+  usuarioRol.textContent = ETIQUETA_ROL[usuarioActual.rol] || usuarioActual.rol;
   usuarioRol.className = `etiqueta rol-${usuarioActual.rol}`;
   infoUsuario.style.display = "inline";
   btnLogout.style.display = "inline-block";
   limpiarFormulario();
-  cargarProductos();
+  aplicarPermisosDeRol();
+  if (typeof prepararMovimientos === "function") prepararMovimientos();
+  if (typeof prepararClientes === "function") prepararClientes();
+  if (typeof prepararSolicitudes === "function") prepararSolicitudes();
+  // Siempre se arranca en Inventario (que carga el listado).
+  if (typeof activarVista === "function") activarVista("productos");
+  else cargarProductos();
 }
 
-async function iniciarSesion(email, password) {
+/**
+ * Arma el cuerpo del login a partir de lo que escribió la persona: un email
+ * (si tiene "@") o un DNI (números; se toleran puntos y espacios: 30.123.456).
+ * Devuelve null si no parece ninguno de los dos.
+ */
+function credencialesDeLogin(identificador, password) {
+  const texto = (identificador || "").trim();
+  if (texto.includes("@")) return { email: texto, password };
+  if (/^[0-9][0-9.\s]*$/.test(texto)) return { dni: texto.replace(/[.\s]/g, ""), password };
+  return null;
+}
+
+async function iniciarSesion(identificador, password) {
+  const cuerpo = credencialesDeLogin(identificador, password);
+  if (!cuerpo) {
+    loginError.textContent = "Ingresá tu DNI (solo números) o tu email.";
+    loginError.className = "estado error";
+    return;
+  }
   btnLogin.disabled = true;
   loginError.className = "estado";
   try {
     const resp = await fetch(`${AUTH_URL}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify(cuerpo),
     });
     const data = await resp.json();
     if (!resp.ok) {
@@ -201,7 +283,6 @@ async function cerrarSesion() {
       });
     } catch (e) { /* sin conexión: no bloquea el cierre local */ }
   }
-  tabla.innerHTML = "";
   mostrarLogin();
 }
 
@@ -220,7 +301,7 @@ async function restaurarSesion() {
 
 formLogin.addEventListener("submit", (evento) => {
   evento.preventDefault();
-  iniciarSesion(loginEmail.value.trim(), loginPassword.value);
+  iniciarSesion(loginEmail.value, loginPassword.value);
 });
 
 btnLogout.addEventListener("click", cerrarSesion);
@@ -228,12 +309,18 @@ btnLogout.addEventListener("click", cerrarSesion);
 // Acceso rápido por rol (solo si config.js lo habilita: entorno de pruebas)
 if (USUARIOS_PRUEBA.habilitado) {
   bloqueAccesoRapido.style.display = "block";
-  ["admin", "empleado"].forEach((rol) => {
+  ["admin", "almacen", "ventas", "mixto"].forEach((rol) => {
     const cred = USUARIOS_PRUEBA[rol];
-    document.getElementById(`cred-${rol}`).textContent = `${cred.email} · ${cred.password}`;
-    document.getElementById(`btn-rapido-${rol}`).addEventListener("click", () => {
-      iniciarSesion(cred.email, cred.password);
-    });
+    const boton = document.getElementById(`btn-rapido-${rol}`);
+    if (!cred || !(cred.dni || cred.email)) {
+      if (boton) boton.style.display = "none"; // config.js sin ese rol
+      return;
+    }
+    // Los empleados entran con DNI; si por config no tiene, se usa el email.
+    const identificador = cred.dni || cred.email;
+    document.getElementById(`cred-${rol}`).textContent =
+      `${cred.dni ? "DNI " + cred.dni : cred.email} · ${cred.password}`;
+    boton.addEventListener("click", () => iniciarSesion(identificador, cred.password));
   });
 }
 
@@ -446,12 +533,17 @@ function mostrarCargando() {
   `;
 }
 
+// Último listado de productos recibido: lo usan las sugerencias de categoría y
+// el selector de producto de las solicitudes de stock.
+let productosCargados = [];
+
 async function cargarProductos() {
   mostrarCargando();
   try {
     const resp = await apiFetch(API_BASE_URL);
     if (!resp.ok) throw new Error("No se pudo obtener el listado de productos.");
     const productos = await resp.json();
+    productosCargados = productos;
     indicadorConexion.textContent = "API conectada";
     indicadorConexion.className = "etiqueta stock-ok";
     renderizarTabla(productos);
@@ -461,6 +553,37 @@ async function cargarProductos() {
     indicadorConexion.className = "etiqueta stock-bajo";
     tabla.innerHTML = `<tr><td colspan="7" class="vacio">No se pudo conectar con la API. Verificá que el backend esté corriendo en ${API_BASE_URL}.</td></tr>`;
   }
+}
+
+/** "m:ss" para la cuenta regresiva del botón Eliminar. */
+function formatearTiempoRestante(segundos) {
+  const total = Math.max(0, Math.ceil(segundos));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Botones de la fila. El servidor decide quién puede eliminar (puede_eliminar):
+ * un admin siempre; un empleado de almacén o mixto solo un producto que cargó
+ * él mismo y durante los primeros minutos (segundos_restantes_eliminar).
+ */
+function botonesDeProducto(prod) {
+  const botones = [];
+  if (puedeEditarProductos()) {
+    botones.push(`<button class="btn-secundario btn-chico" onclick="editarProducto(${prod.id_producto})">Editar</button>`);
+  }
+  if (prod.puede_eliminar) {
+    if (prod.segundos_restantes_eliminar != null) {
+      const vence = Date.now() + prod.segundos_restantes_eliminar * 1000;
+      botones.push(
+        `<button class="btn-peligro btn-chico btn-eliminar-ventana" data-vence="${vence}" ` +
+        `title="Lo cargaste vos hace poco: podés eliminarlo hasta que se termine el tiempo." ` +
+        `onclick="eliminarProducto(${prod.id_producto}, true)">Eliminar (${formatearTiempoRestante(prod.segundos_restantes_eliminar)})</button>`
+      );
+    } else {
+      botones.push(`<button class="btn-peligro btn-chico" onclick="eliminarProducto(${prod.id_producto})">Eliminar</button>`);
+    }
+  }
+  return botones.join(" ");
 }
 
 function renderizarTabla(productos) {
@@ -483,14 +606,21 @@ function renderizarTabla(productos) {
         <td>${escaparHtml(prod.categoria || "—")}</td>
         <td>${formatearPrecio(prod.precio_venta)}</td>
         <td>${etiquetaStock}</td>
-        <td class="col-acciones">
-          <button class="btn-secundario btn-chico" onclick="editarProducto(${prod.id_producto})">Editar</button>
-          ${esAdmin() ? `<button class="btn-peligro btn-chico" onclick="eliminarProducto(${prod.id_producto})">Eliminar</button>` : ""}
-        </td>
+        <td class="col-acciones">${botonesDeProducto(prod)}</td>
       </tr>
     `;
   }).join("");
 }
+
+// Cada segundo se actualiza la cuenta regresiva de los botones "Eliminar (m:ss)"
+// y, al llegar a 0, el botón desaparece (el servidor igual lo rechazaría).
+setInterval(() => {
+  document.querySelectorAll(".btn-eliminar-ventana").forEach((boton) => {
+    const restante = (Number(boton.dataset.vence) - Date.now()) / 1000;
+    if (restante <= 0) boton.remove();
+    else boton.textContent = `Eliminar (${formatearTiempoRestante(restante)})`;
+  });
+}, 1000);
 
 function escaparHtml(texto) {
   const div = document.createElement("div");
@@ -529,8 +659,11 @@ async function editarProducto(id) {
   }
 }
 
-async function eliminarProducto(id) {
-  if (!confirm("¿Eliminar este producto del inventario? Esta acción no se puede deshacer.")) return;
+async function eliminarProducto(id, enVentana = false) {
+  const aviso = enVentana
+    ? "¿Eliminar este producto? Lo cargaste hace pocos minutos, por eso podés hacerlo vos; después solo un administrador. Esta acción no se puede deshacer."
+    : "¿Eliminar este producto del inventario? Esta acción no se puede deshacer.";
+  if (!confirm(aviso)) return;
 
   try {
     const resp = await apiFetch(`${API_BASE_URL}/${id}`, { method: "DELETE" });
@@ -544,8 +677,10 @@ async function eliminarProducto(id) {
       mostrarEstado("El producto tiene movimientos registrados: se dio de baja en vez de eliminarse.", "ok");
       cargarProductos();
     } else {
-      const data = await resp.json();
+      const data = await leerJson(resp);
       mostrarEstado(data.mensaje || data.detail || "No se pudo eliminar el producto.", "error");
+      // Un 403 típico: se venció la ventana mientras tanto. Se refresca para que el botón desaparezca.
+      if (resp.status === 403) cargarProductos();
     }
   } catch (error) {
     if (error.sesionExpirada) return;
@@ -707,15 +842,6 @@ function restringirInputNumerico(input, { permitirDecimal = false } = {}) {
   });
 }
 
-// Los DNI son 8 dígitos numéricos: se filtra todo lo que no sea dígito
-// y se limita a 8 caracteres.
-function restringirInputDni(input) {
-  if (!input) return;
-  input.addEventListener("input", () => {
-    input.value = input.value.replace(/\D/g, "").slice(0, 8);
-  });
-}
-
 // --- Tooltips de ayuda de los campos (botón "?") ---
 // Con el mouse se muestran al pasar por encima; con teclado, al enfocar el
 // botón; en pantallas táctiles, al tocarlo (se alterna la clase "abierto").
@@ -763,4 +889,146 @@ restringirInputNumerico(campoStockMinimo);
 restringirInputNumerico(campoCantidadSeed);
 
 
-restaurarSesion();
+// (La sesión se restaura desde index.html, cuando ya cargaron todos los scripts.)
+
+// ---------------------------------------------------------------------------
+// Lista desplegable con búsqueda (patrón .dropdown de la página)
+// ---------------------------------------------------------------------------
+
+/** Minúsculas y sin tildes, para comparar lo que escribe el usuario con las opciones. */
+function normalizarTexto(texto) {
+  return (texto || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+/**
+ * Convierte un <input> (dentro de un div.dropdown) en un campo donde se puede
+ * ESCRIBIR y además elegir de una lista que se va filtrando.
+ *
+ *  - opciones(texto): devuelve [{ clave, texto, ... }] o una promesa con eso.
+ *  - alElegir(opcion): se llama al hacer clic (o Enter) sobre una opción.
+ *  - alEscribir(): se llama cuando el usuario edita el texto (para invalidar la
+ *    elección anterior).
+ *  - sinResultados(texto): mensaje cuando no hay opciones; si devuelve null, la
+ *    lista simplemente no se muestra (útil en campos de texto libre).
+ *  - enterElige: si es true, Enter sin flechas elige la primera opción; en un
+ *    campo de texto libre conviene false para que Enter siga enviando lo escrito.
+ *  - retardoMs: espera antes de buscar (para consultas al servidor).
+ */
+function crearCombo({
+  input, lista, opciones, alElegir, alEscribir,
+  sinResultados = () => "Sin coincidencias", enterElige = true, retardoMs = 0,
+}) {
+  const contenedor = input.closest(".dropdown");
+  let actuales = [];
+  let resaltada = -1;
+  let ultimaBusqueda = 0;
+  let temporizador = null;
+
+  function marcarResaltada() {
+    lista.querySelectorAll(".dropdown-opcion[data-i]").forEach((el) => {
+      el.classList.toggle("resaltada", Number(el.dataset.i) === resaltada);
+    });
+    const activa = lista.querySelector(".dropdown-opcion.resaltada");
+    if (activa && activa.scrollIntoView) activa.scrollIntoView({ block: "nearest" });
+  }
+
+  function dibujar(items) {
+    actuales = items;
+    resaltada = -1;
+    if (!items.length) {
+      const mensaje = sinResultados(input.value);
+      if (mensaje == null) {
+        lista.hidden = true;
+        return;
+      }
+      lista.innerHTML = `<div class="dropdown-opcion sin-resultados">${escaparHtml(mensaje)}</div>`;
+    } else {
+      lista.innerHTML = items
+        .map((o, i) => `<div class="dropdown-opcion" role="option" data-i="${i}">${escaparHtml(o.texto)}</div>`)
+        .join("");
+    }
+    lista.hidden = false;
+  }
+
+  async function mostrar() {
+    const numero = ++ultimaBusqueda;
+    let items = [];
+    try {
+      items = await opciones(input.value);
+    } catch (error) {
+      items = [];
+    }
+    if (numero !== ultimaBusqueda) return; // llegó una búsqueda más nueva
+    dibujar(items);
+  }
+
+  function ocultar() {
+    ultimaBusqueda++;
+    clearTimeout(temporizador);
+    lista.hidden = true;
+  }
+
+  function elegir(indice) {
+    const opcion = actuales[indice];
+    if (!opcion) return;
+    ocultar();
+    alElegir(opcion);
+  }
+
+  input.addEventListener("focus", mostrar);
+  input.addEventListener("click", () => { if (lista.hidden) mostrar(); });
+  input.addEventListener("input", () => {
+    if (alEscribir) alEscribir();
+    clearTimeout(temporizador);
+    temporizador = setTimeout(mostrar, retardoMs);
+  });
+  input.addEventListener("keydown", (evento) => {
+    if (evento.key === "Escape") {
+      ocultar();
+    } else if (evento.key === "ArrowDown" || evento.key === "ArrowUp") {
+      if (lista.hidden) { mostrar(); return; }
+      if (!actuales.length) return;
+      evento.preventDefault();
+      const paso = evento.key === "ArrowDown" ? 1 : -1;
+      resaltada = (resaltada + paso + actuales.length) % actuales.length;
+      marcarResaltada();
+    } else if (evento.key === "Enter" && !lista.hidden && actuales.length) {
+      if (resaltada >= 0 || enterElige) {
+        evento.preventDefault();
+        elegir(resaltada >= 0 ? resaltada : 0);
+      }
+    }
+  });
+
+  // Evita que el clic en una opción le saque el foco al campo antes de elegirla.
+  lista.addEventListener("mousedown", (evento) => evento.preventDefault());
+  lista.addEventListener("click", (evento) => {
+    const opcion = evento.target.closest(".dropdown-opcion[data-i]");
+    if (opcion) elegir(Number(opcion.dataset.i));
+  });
+  document.addEventListener("click", (evento) => {
+    if (!contenedor.contains(evento.target)) ocultar();
+  });
+
+  return { mostrar, ocultar };
+}
+
+// Categoría del producto: se puede escribir una nueva o elegir una que ya exista.
+crearCombo({
+  input: campoCategoria,
+  lista: document.getElementById("categoria-lista"),
+  enterElige: false, // texto libre: Enter envía el formulario con lo escrito
+  opciones: (texto) => {
+    const buscado = normalizarTexto(texto);
+    const existentes = [...new Set(productosCargados.map((p) => (p.categoria || "").trim()).filter(Boolean))];
+    return existentes
+      .filter((c) => !buscado || normalizarTexto(c).includes(buscado))
+      .sort((a, b) => a.localeCompare(b, "es"))
+      .map((c) => ({ clave: c, texto: c }));
+  },
+  sinResultados: (texto) => (texto.trim() ? `Categoría nueva: «${texto.trim()}»` : null),
+  alElegir: (opcion) => {
+    campoCategoria.value = opcion.texto;
+    limpiarErrorDeCampo(campoCategoria);
+  },
+});

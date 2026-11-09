@@ -18,6 +18,7 @@ administración (HTML/JS) servido con nginx.
 ├── services/
 │   ├── auth/              # Login, JWT (access/refresh), roles (FastAPI + SQLite + Redis para la blacklist)
 │   ├── productos/         # CRUD de Producto + ajuste atómico e idempotente de stock (FastAPI + SQLite)
+│   ├── clientes/          # Clientes: ID propio, documento libre, email y teléfono opcionales, búsqueda (FastAPI + SQLite)
 │   ├── movimientos/       # Historial + saga de registro + outbox de eventos (FastAPI + SQLite + RabbitMQ)
 │   └── worker-alertas/    # Consumidor RabbitMQ: alertas de stock bajo (DLQ, idempotencia, GET /health)
 └── frontend/              # Panel de administración, servido con nginx
@@ -65,7 +66,7 @@ invalidaría las sesiones abiertas).
 | `.\ejecutar_docker.ps1 -Detener` | Detiene el sistema; los datos se conservan |
 | `.\ejecutar_docker.ps1 -BorrarDatos` | Detiene y **borra todos los datos** (pide escribir `SI`) |
 
-Usa los mismos puertos que `ejecutar_local.ps1` (8000, 8001, 8002, 8080): si lo
+Usa los mismos puertos que `ejecutar_local.ps1` (8000, 8001, 8002, 8004, 8080): si lo
 tenías corriendo, cerrá esas ventanas antes.
 
 ### Manual (cualquier sistema)
@@ -88,12 +89,15 @@ Esto levanta, en orden (según `depends_on` + healthchecks):
    firma los JWT.
 4. **`productos`** en `http://localhost:8000` — valida JWT localmente y
    expone el CRUD + ajuste atómico de stock.
-5. **`movimientos`** en `http://localhost:8002` — registra movimientos,
-   ajusta stock en `productos` y publica eventos en RabbitMQ (vía outbox).
-6. **`worker-alertas`** — consumidor asíncrono. Expone `GET /health` en
+5. **`clientes`** en `http://localhost:8004` — alta y búsqueda de clientes
+   (ID propio; el documento puede repetirse; email y teléfono opcionales).
+6. **`movimientos`** en `http://localhost:8002` — registra movimientos, valida
+   el cliente contra `clientes`, ajusta stock en `productos` y publica eventos
+   en RabbitMQ (vía outbox).
+7. **`worker-alertas`** — consumidor asíncrono. Expone `GET /health` en
    `http://localhost:8003` (200 solo si está consumiendo) y se puede seguir
    también por logs (`docker compose logs -f worker-alertas`).
-7. **`frontend`** en `http://localhost:8080` — con su `config.js` generado
+8. **`frontend`** en `http://localhost:8080` — con su `config.js` generado
    en runtime a partir de las variables de entorno.
 
 Abrir `http://localhost:8080` en el navegador para usar el panel.
@@ -102,6 +106,7 @@ Documentación interactiva (Swagger) de cada API:
 
 - Productos: `http://localhost:8000/docs`
 - Movimientos: `http://localhost:8002/docs`
+- Clientes: `http://localhost:8004/docs`
 - Auth: `http://localhost:8001/docs`
 
 Para bajar todo:
@@ -119,15 +124,20 @@ docker compose down -v
 ## Usuarios y acceso rápido (entorno de pruebas)
 
 Con `HABILITAR_USUARIOS_PRUEBA=true` (valor por defecto en `.env.example`),
-`auth` crea estos dos usuarios al arrancar, y la pantalla de login del
-frontend muestra un botón de **acceso rápido** por rol:
+`auth` crea una cuenta por rol al arrancar, y la pantalla de login del
+frontend muestra un botón de **acceso rápido** por cada una. Se entra con el
+**DNI** (el admin también con su email):
 
-| Rol        | Email               | Contraseña     | Permisos                                                       |
-|------------|---------------------|----------------|----------------------------------------------------------------|
-| `admin`    | `admin@test.com`    | `admin12345`   | Todo: productos (incluido eliminar) y gestión de usuarios.      |
-| `empleado` | `empleado@test.com` | `empleado123`  | Ver/crear/editar productos y registrar movimientos. No puede eliminar. |
+| Rol | DNI | Email | Contraseña | Permisos |
+|---|---|---|---|---|
+| `admin` | `20000001` | `admin@test.com` | `admin12345` | Todo: catálogo, movimientos, clientes, solicitudes de stock y usuarios. |
+| `almacen` | `30000002` | `almacen@test.com` | `almacen123` | Carga productos, elimina los suyos durante 5 min y pide reposición de stock. |
+| `ventas` | `30000003` | `ventas@test.com` | `ventas123` | Registra movimientos y busca/crea clientes. No toca el catálogo. |
+| `mixto` | `30000004` | `mixto@test.com` | `mixto123` | Lo de almacén y lo de ventas. |
 
-Los valores salen de `PRUEBA_ADMIN_*` y `PRUEBA_EMPLEADO_*` en `.env`. Para
+El detalle de qué puede hacer cada rol está en [`services/auth/README.md`](services/auth/README.md#roles).
+
+Los valores salen de `PRUEBA_<ROL>_EMAIL`, `_DNI` y `_PASSWORD` en `.env`. Para
 un entorno real, poner `HABILITAR_USUARIOS_PRUEBA=false`: no se crean los
 usuarios y el frontend deja de recibir las credenciales. Opcionalmente se
 puede definir un admin propio con `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD`
@@ -358,7 +368,7 @@ Como esa venta nunca llegó a aplicarse en `productos`, responde
 `{"revisados":1,"confirmados":0,"descartados":1,"sin_resolver":0}` y el
 movimiento desaparece del historial. Reconciliar **nunca** vuelve a modificar
 el stock. (Sin `antiguedad_minima_segundos=0` solo se revisan los pendientes de
-más de 5 minutos.) Un token de empleado recibe `403`.
+más de 5 minutos.) Cualquier rol que no sea admin recibe `403`.
 
 ### Paso 10 — Probar el borrado de un producto con `movimientos` caído
 
@@ -385,7 +395,7 @@ sola, sin Docker ni servicios levantados (ver "Tests"):
 powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Bateria
 ```
 
-Esperado: pasan los tests de `productos` y `movimientos`, y cada servicio
+Esperado: pasan los tests de `productos`, `movimientos` y `clientes`, y cada servicio
 imprime una línea con el resultado de la prueba de carga, por ejemplo:
 
 ```
@@ -609,7 +619,7 @@ open http://localhost:15672   # usuario/clave en .env
 
 ## Seguridad de las APIs: validación de entrada y headers
 
-`productos` y `movimientos` aplican dos controles, que cubre la batería de la
+`productos`, `movimientos` y `clientes` aplican dos controles, que cubre la batería de la
 actividad "Prueba de Carga y Blindaje de Endpoints" (ver "Tests"):
 
 ### Validación de entrada
@@ -622,7 +632,7 @@ en `500`.
 | Servicio | Campos | Qué se rechaza |
 |---|---|---|
 | `productos` | `nombre`, `marca`, `categoria` | Los caracteres `<` `>` `;` `=` `{` `}` `\`, el acento grave y los caracteres de control (byte nulo, saltos de línea, tabulaciones). Se aceptan tildes, ñ y la puntuación habitual de un catálogo (`. , - ' & / ( ) + : % # ° ® ™ ! ?`). |
-| `movimientos` | `dni_cliente`, `dni_empleado` | Todo lo que no sea de 1 a 8 dígitos (`^[0-9]{1,8}$`), el mismo criterio que ya aplica el formulario del panel. |
+| `clientes` | `documento`, `email`, `telefono` | `documento`: solo letras, números, espacio, punto, guion y barra (hasta 30; **no** se valida como DNI argentino ni es único). `email` y `telefono` (opcionales): formato de email y de teléfono internacional. El empleado ya no es un campo: sale del token. |
 
 - El filtro de `productos` es una **lista de caracteres prohibidos**, no una
   lista blanca: los nombres de un catálogo necesitan mucha variedad de
@@ -637,7 +647,7 @@ en `500`.
 
 ### Headers de seguridad
 
-Un middleware los agrega a **toda** respuesta de `productos` y `movimientos`,
+Un middleware los agrega a **toda** respuesta de `productos`, `movimientos` y `clientes`,
 errores incluidos (también el `500` inesperado, ver
 [`docs/ARQUITECTURA.md`](./docs/ARQUITECTURA.md#seguridad-de-entrada-y-encabezados)).
 
@@ -692,10 +702,35 @@ Cada servicio con estado tiene su propio volumen Docker, montado en
 |---|---|---|
 | `auth` | `auth_data` | `auth.db` (usuarios, tokens de refresh) |
 | `productos` | `productos_data` | `jugueteria.db` (catálogo + stock) |
+| `clientes` | `clientes_data` | `clientes.db` (clientes: ID, documento, email, teléfono) |
 | `movimientos` | `movimientos_data` | `movimientos.db` (histórico de movimientos, claves de idempotencia y outbox de eventos) |
 | `worker-alertas` | `alertas_data` | `alertas_procesadas.db` (idempotencia local) |
 | `redis` | `redis_data` | Blacklist de JWT (tokens revocados por logout) |
 | `rabbitmq` | `rabbitmq_data` | Colas y mensajes persistentes |
+
+### Migrar clientes de la versión anterior
+
+Si ya habías cargado clientes cuando estaban dentro de `movimientos` (tabla
+`clientes` de `movimientos.db`), hay que pasarlos al servicio `clientes`. Al
+arrancar, `movimientos` ya copia el documento de cada cliente a sus movimientos
+(el historial no se pierde), pero la ficha del cliente (email, teléfono) hay que
+importarla, conservando los IDs para que los movimientos sigan apuntando bien:
+
+```bash
+docker compose down
+# copiar movimientos.db del volumen movimientos_data a ./tmp y correr la importación
+docker run --rm -v jugueteria_movimientos_data:/origen -v jugueteria_clientes_data:/destino \
+  -v "$PWD/services/clientes:/app" -w /app python:3.12-slim sh -c \
+  "pip install -q -r requirements.txt && python importar_desde_movimientos.py \
+   --origen /origen/movimientos.db --destino /destino/clientes.db"
+docker compose up -d
+```
+
+(El prefijo de los nombres de volumen depende del nombre de la carpeta del
+proyecto: `docker volume ls` muestra los reales.) El script es idempotente y no
+modifica `movimientos.db`. Sin Docker: `python importar_desde_movimientos.py
+--origen services/movimientos/data/movimientos.db --destino services/clientes/data/clientes.db`
+desde `services/clientes`. Si todavía no cargaste clientes, no hace falta nada.
 
 Para precargar datos de ejemplo en `productos` una vez que el servicio está
 corriendo:
@@ -726,9 +761,10 @@ El script crea un entorno virtual por servicio, instala las dependencias
 | `auth` | 8001 |
 | `productos` | 8000 |
 | `movimientos` | 8002 |
+| `clientes` | 8004 |
 | `frontend` (`python -m http.server`) | 8080 |
 
-Los cuatro puertos deben estar libres. Cada servicio usa un Redis en memoria
+Los cinco puertos deben estar libres. Cada servicio usa un Redis en memoria
 (`REDIS_URL=memory://`, vía `fakeredis`). Es solo para probar; limitaciones
 de este modo:
 
@@ -736,8 +772,8 @@ de este modo:
   igual y su evento queda guardado en el outbox de `movimientos` (el relay que
   lo publicaría está desactivado en este modo para no llenar la ventana de
   errores de AMQP). No se procesan alertas de stock bajo.
-- **El logout sí invalida el token en los tres servicios**, aunque cada uno
-  tenga su propio Redis en memoria: `productos` y `movimientos` le preguntan a
+- **El logout sí invalida el token en los cuatro servicios**, aunque cada uno
+  tenga su propio Redis en memoria: `productos`, `clientes` y `movimientos` le preguntan a
   `auth` si el token fue revocado (`AUTH_SERVICE_URL`, y `auth` habilita
   `GET /api/v1/auth/tokens/{jti}/revocado` con `HABILITAR_CONSULTA_REVOCACION`;
   el script ya configura las tres variables). Es una llamada HTTP extra por
@@ -819,12 +855,12 @@ powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Tests
 A mano, dentro de la carpeta de cada servicio (`services/<servicio>`):
 
 ```bash
-pip install -r requirements-dev.txt   # auth y productos; en movimientos y worker-alertas alcanza con requirements.txt
+pip install -r requirements-dev.txt   # auth y productos; en movimientos, clientes y worker-alertas alcanza con requirements.txt
 python -m pytest
 ```
 
 Los tests **no están incluidos en las imágenes de Docker** de `auth`,
-`productos` y `movimientos` (sus Dockerfile copian solo `app/`), por eso no se
+`productos`, `movimientos` y `clientes` (sus Dockerfile copian solo `app/`), por eso no se
 corren con `docker compose exec`. `worker-alertas` sí los incluye en su imagen
 (`docker compose exec worker-alertas pytest`).
 
@@ -832,9 +868,10 @@ Cobertura actual:
 
 | Servicio | Tests | Qué cubre |
 |---|---|---|
-| `auth` | 32 | Login, roles, refresh, logout, bloqueo por intentos, consulta de revocación (modo local) |
-| `productos` | 101 | CRUD, validaciones, baja lógica, autenticación, **concurrencia** (`test_concurrencia_stock.py`), **idempotencia del ajuste** (`test_idempotencia_ajuste.py`), **integración con movimientos** (`test_integracion_movimientos.py`) |
-| `movimientos` | 77 | Delta por categoría, **saga y consistencia** (`test_saga_consistencia.py`), **outbox y relay** (`test_outbox.py`), publisher, migración de esquema, API HTTP |
+| `auth` | 48 | Login con DNI o email, roles (admin, almacén, ventas, mixto), refresh, logout, bloqueo por intentos, consulta de revocación (modo local), migración de esquema |
+| `productos` | 165 | CRUD, validaciones, baja lógica, autenticación, **permisos por rol y ventana de 5 minutos para borrar** (`test_roles_y_borrado.py`), **solicitudes de stock** (`test_solicitudes_stock.py`), **concurrencia** (`test_concurrencia_stock.py`), **idempotencia del ajuste** (`test_idempotencia_ajuste.py`), **integración con movimientos** (`test_integracion_movimientos.py`) |
+| `movimientos` | 111 | Delta por categoría, **saga y consistencia** (`test_saga_consistencia.py`), **outbox y relay** (`test_outbox.py`), publisher, migración de esquema, API HTTP, **roles, empleado tomado del token e integración con Clientes** (`test_roles_y_clientes.py`) |
+| `clientes` | 69 | Alta (ID propio, documento repetible, email y teléfono opcionales), búsqueda, permisos por rol, sanitización, encabezados de seguridad, importación desde la versión anterior |
 | `worker-alertas` | 19 | Idempotencia, regla de stock bajo (`<=`), conteo de reintentos, **healthcheck HTTP** |
 
 Los tests de `auth` necesitan un Redis: por defecto esperan uno **real** en
@@ -843,7 +880,7 @@ correrlos contra el Redis del compose, base 0, porque se borraría la blacklist
 de tokens). Con `REDIS_URL=memory://` usan `fakeredis` y no necesitan nada
 instalado (es lo que hace el script). Ver `services/auth/tests/conftest.py`.
 
-Además, el CI (`.github/workflows/tests.yml`) corre las cuatro suites en cada
+Además, el CI (`.github/workflows/tests.yml`) corre las cinco suites en cada
 push, con un Redis real como servicio para `auth`.
 
 Ver el detalle de qué cubre cada archivo en el README de cada servicio. El
@@ -860,8 +897,11 @@ se lanza con `ejecutar_local.ps1 -Bateria`.
 | Prueba | `productos` | `movimientos` |
 |---|---|---|
 | **Carga concurrente**: 20 peticiones simultáneas (una barrera de hilos las libera a la vez); mide latencia media y tasa de éxito | `PATCH /ajustar-stock` sobre un producto con stock 20: las 20 salen bien y el stock termina en 0 | `POST /movimientos`: se registran 20 movimientos distintos y se piden 20 ajustes a `productos` |
-| **Sanitización**: caracteres maliciosos (XSS, SQL, plantillas, comandos, byte nulo, saltos de línea) devuelven `400`, nunca `500`, y no se guarda nada | 10 payloads sobre nombre, marca, categoría y precio, más la edición y un control con nombres reales | 9 payloads sobre los DNI, la categoría y la cantidad, más un control con datos válidos |
+| **Sanitización**: caracteres maliciosos (XSS, SQL, plantillas, comandos, byte nulo, saltos de línea) devuelven `400`, nunca `500`, y no se guarda nada | 10 payloads sobre nombre, marca, categoría y precio, más la edición y un control con nombres reales | 7 payloads sobre la categoría, la cantidad, el producto y el cliente, más un control con datos válidos |
 | **Headers de seguridad** en respuestas 200, 201, 400, 404 y 500 | Sí | Sí |
+
+`clientes` tiene su propia sanitización y encabezados en `tests/test_sanitizacion_y_encabezados.py`
+(12 payloads sobre documento, email y teléfono), que `ejecutar_local.ps1 -Bateria` también corre.
 
 Alcance: la carga es en proceso (`TestClient` con 20 hilos) y con las
 dependencias simuladas. Mide cada servicio por separado, no la cadena

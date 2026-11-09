@@ -47,12 +47,17 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15")
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 
 
-def crear_access_token(id_usuario: int, email: str, rol: str, jti: str) -> str:
+def crear_access_token(id_usuario: int, email: str, rol: str, jti: str, dni: str | None = None) -> str:
+    """
+    Emite un access token. `dni` viaja como claim: los demás servicios lo usan
+    para registrar quién hizo cada operación sin pedírselo al usuario.
+    """
     ahora = datetime.now(timezone.utc)
     payload = {
         "sub": str(id_usuario),
         "email": email,
         "rol": rol,
+        "dni": dni,
         "tipo": "access",
         "jti": jti,
         "iat": ahora,

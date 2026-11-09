@@ -47,7 +47,20 @@ class Movimiento(Base):
     cantidad_movida = Column(Integer, nullable=False)
 
     id_producto = Column(Integer, nullable=False, index=True)
+
+    # Cliente (opcional). Los clientes son del servicio de Clientes (base propia):
+    # acá solo se guarda su id y una copia de su documento al momento del
+    # movimiento, así el historial se puede mostrar sin consultar a Clientes y
+    # conserva el dato tal como estaba cuando se hizo la venta.
+    id_cliente = Column(Integer, nullable=True, index=True)
+    cliente_documento = Column(String(30), nullable=True)
+
+    # LEGADO: antes el cliente se guardaba como DNI suelto. Ya no se escribe;
+    # se conserva para mostrar los movimientos anteriores a la tabla clientes.
     dni_cliente = Column(String, nullable=True)
+
+    # DNI del empleado que registró el movimiento. NO lo escribe el usuario: lo
+    # completa el servidor con el claim "dni" del token de quien está logueado.
     dni_empleado = Column(String, nullable=True)
 
     # pendiente | confirmado (ver docstring del módulo).

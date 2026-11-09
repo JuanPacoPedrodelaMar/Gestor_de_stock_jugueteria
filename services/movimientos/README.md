@@ -134,7 +134,7 @@ curl -X POST http://localhost:8002/api/v1/movimientos \
   (el segundo recibe el movimiento del primero). Antes se consultaba Redis y se
   guardaba después en pasos separados, lo que dejaba una carrera.
 - **Reutilizar la clave con otro contenido** (otra categoría, cantidad,
-  producto o DNI) devuelve `422`.
+  producto, cliente o empleado) devuelve `422`.
 - **No depende de Redis** ni caduca: vive mientras exista el movimiento.
 - Sin header, cada request crea un movimiento nuevo (como antes).
 
@@ -149,14 +149,48 @@ hasta 60 s); sobrevive a reinicios del servicio. La entrega es *at-least-once*:
 el worker es idempotente por `id_movimiento`. Detalles y garantías en
 `EVENTOS.md`.
 
+## Roles, empleado y cliente
+
+| Qué | Quién |
+|---|---|
+| Registrar movimientos (`POST /api/v1/movimientos`) y consultarlos | `admin`, `ventas`, `mixto` (un `almacen` recibe `403`: pide reposición en Productos) |
+| Editar o borrar un movimiento | Nadie: el historial es de solo inserciones |
+| Reconciliar pendientes | `admin` |
+| Historial de un cliente (`GET /api/v1/movimientos?id_cliente=N`) | `admin`, `ventas`, `mixto` |
+
+**El empleado sale del token.** El DNI del empleado de cada movimiento
+(`dni_empleado`) es el claim `dni` de quien está logueado. Si el pedido trae un
+`dni_empleado`, se ignora: no se puede falsear a nombre de quién queda.
+
+**Cliente.** Los clientes (alta, búsqueda, datos de contacto) los gestiona el
+servicio [`clientes`](../clientes/README.md), que es dueño de esos datos. Un
+movimiento puede llevar un `id_cliente` (opcional) y este servicio:
+
+1. Lo valida contra `clientes` (`GET /api/v1/clientes/{id}`, reenviando el token
+   del usuario) **antes** de registrar nada: si no existe, `404`; si `clientes`
+   no responde, `503`. En ambos casos no se crea el movimiento ni se toca el stock.
+2. Guarda en el movimiento una **copia del documento** (`cliente_documento`),
+   de modo que el historial se muestra sin consultar a `clientes` y refleja el
+   dato como estaba al momento de la venta.
+3. Un reintento con la misma `Idempotency-Key` no vuelve a consultar a `clientes`.
+
+Los movimientos **sin** cliente no dependen de ese servicio. El historial de un
+cliente es `GET /api/v1/movimientos?id_cliente=N` (el más reciente primero; `400`
+si el id no es un entero positivo). Los movimientos anteriores a los clientes
+conservan su `dni_cliente` suelto (columna de legado) y se muestran sin ficha.
+
+Variables: `CLIENTES_SERVICE_URL` (default `http://localhost:8004`; en Docker
+`http://clientes:8000`) y `CLIENTES_SERVICE_TIMEOUT` (segundos, default 5).
+
 ## Validación de entrada y encabezados de seguridad
 
-**Validación.** `dni_cliente` y `dni_empleado` aceptan solo de 1 a 8 dígitos
-(`^[0-9]{1,8}$`), el mismo criterio que ya aplica el formulario del panel (o
-`null` si no se informa). Cualquier otro valor, incluidos los caracteres de
-inyección, devuelve `400` con el formato de error del proyecto y no llega a
-`productos` ni a la base. `categoria_movimiento` y `cantidad_movida` ya
-rechazaban valores fuera de su tipo.
+**Validación.** El movimiento ya no recibe DNI: el cliente se indica con
+`id_cliente` (entero positivo, opcional) y el empleado lo toma el servidor del
+token. Los campos de texto de un **cliente** (`documento`, `email`, `telefono`)
+se validan con un juego de caracteres acotado; cualquier otro valor, incluidos
+los caracteres de inyección, devuelve `400` con el formato de error del
+proyecto y no llega a `productos` ni a la base. `categoria_movimiento`,
+`cantidad_movida` e `id_cliente` rechazan valores fuera de su tipo.
 
 **Headers.** Un middleware agrega `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY` y `Content-Security-Policy: frame-ancestors 'none'` a
@@ -172,6 +206,8 @@ Ambos puntos están cubiertos por `tests/test_bateria_minima.py`.
 | `DATABASE_URL` | `sqlite:///./data/movimientos.db` | Base propia de Movimientos |
 | `PRODUCTOS_SERVICE_URL` | `http://localhost:8000` | URL interna del servicio Productos |
 | `PRODUCTOS_SERVICE_TIMEOUT` | `5` (segundos) | Timeout de las llamadas HTTP a Productos |
+| `CLIENTES_SERVICE_URL` | `http://localhost:8004` | URL interna del servicio Clientes (valida el `id_cliente` de cada movimiento) |
+| `CLIENTES_SERVICE_TIMEOUT` | `5` (segundos) | Timeout de las llamadas HTTP a Clientes |
 | `AUTH_SECRET_KEY` | — (obligatoria) | Mismo secreto que `auth` y `productos`, para validar JWT |
 | `REDIS_URL` | `redis://localhost:6379/0` | Blacklist de tokens revocados. `memory://` en modo local |
 | `AUTH_SERVICE_URL` | — | **Solo modo local** (`REDIS_URL=memory://`): URL de `auth`, a quien se consulta si un token fue revocado |
@@ -228,7 +264,7 @@ Cubren:
   fixtures de `conftest.py`): la **carga concurrente** (20 `POST /movimientos`
   simultáneos: se registran 20 movimientos distintos, se piden 20 ajustes a
   Productos, e imprime latencia media y tasa de éxito); la **sanitización** (9
-  payloads maliciosos sobre los DNI, la categoría y la cantidad devuelven 400,
-  no llegan a Productos ni se guardan; un control confirma que un DNI válido
-  y un `null` se aceptan); y los **headers de seguridad** en respuestas 200,
+  payloads maliciosos sobre la categoría, la cantidad, el cliente y los campos
+  de texto de un cliente devuelven 400, no llegan a Productos ni se guardan;
+  un control confirma que documentos, emails y teléfonos reales se aceptan); y los **headers de seguridad** en respuestas 200,
   201, 400, 404 y 500.

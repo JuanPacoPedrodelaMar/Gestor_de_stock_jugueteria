@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -100,7 +101,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={
             "error": True,
             "mensaje": "Datos inválidos en la solicitud.",
-            "detalles": exc.errors(),
+            "detalles": jsonable_encoder(exc.errors()),
         },
     )
 

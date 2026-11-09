@@ -88,3 +88,48 @@ def test_en_una_base_nueva_no_hace_nada(tmp_path):
 
     assert "estado" in {c["name"] for c in inspect(engine).get_columns("movimientos")}
     engine.dispose()
+
+
+def test_migra_agregando_las_columnas_de_cliente_y_conserva_el_dni_de_legado(engine_con_base_vieja):
+    """Una base anterior a los clientes: los movimientos viejos quedan sin cliente y no se pierde su dni_cliente."""
+    engine = engine_con_base_vieja
+    with engine.begin() as conexion:
+        conexion.execute(text("UPDATE movimientos SET dni_cliente = '20111222' WHERE id_movimiento = 1"))
+
+    migrar_esquema(engine)
+
+    columnas = {c["name"] for c in inspect(engine).get_columns("movimientos")}
+    assert {"id_cliente", "cliente_documento"} <= columnas
+    assert "clientes" not in inspect(engine).get_table_names()  # los clientes ya no viven acá
+
+    db = sessionmaker(bind=engine)()
+    viejo = db.query(Movimiento).filter(Movimiento.id_movimiento == 1).one()
+    assert viejo.id_cliente is None and viejo.cliente_documento is None
+    assert viejo.dni_cliente == "20111222"  # el dato de legado se conserva
+    db.add(Movimiento(categoria_movimiento="venta", cantidad_movida=1, id_producto=1, id_cliente=7, cliente_documento="X-1"))
+    db.commit()
+    assert db.query(Movimiento).filter(Movimiento.id_cliente == 7).one().cliente_documento == "X-1"
+    db.close()
+
+
+def test_copia_el_documento_de_la_tabla_clientes_de_la_version_intermedia(engine_con_base_vieja):
+    """
+    Una versión intermedia guardaba los clientes en esta misma base. Al migrar, el
+    documento se copia a cada movimiento (para no perderlo del historial) y la
+    tabla vieja NO se borra: es la fuente para importarla al servicio de Clientes.
+    """
+    engine = engine_con_base_vieja
+    with engine.begin() as conexion:
+        conexion.execute(text("ALTER TABLE movimientos ADD COLUMN id_cliente INTEGER"))
+        conexion.execute(text("CREATE TABLE clientes (id_cliente INTEGER PRIMARY KEY, documento VARCHAR(30) NOT NULL)"))
+        conexion.execute(text("INSERT INTO clientes (id_cliente, documento) VALUES (5, 'X-1234.567/A')"))
+        conexion.execute(text("UPDATE movimientos SET id_cliente = 5 WHERE id_movimiento = 1"))
+
+    migrar_esquema(engine)
+
+    with engine.connect() as conexion:
+        documento = conexion.execute(text("SELECT cliente_documento FROM movimientos WHERE id_movimiento = 1")).scalar()
+        sin_cliente = conexion.execute(text("SELECT cliente_documento FROM movimientos WHERE id_movimiento = 2")).scalar()
+    assert documento == "X-1234.567/A"
+    assert sin_cliente is None
+    assert "clientes" in inspect(engine).get_table_names()  # no se borra
