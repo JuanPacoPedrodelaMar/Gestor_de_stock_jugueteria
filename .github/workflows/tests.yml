@@ -64,8 +64,8 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          # auth y productos separan las deps de test en requirements-dev.txt;
-          # movimientos, clientes y worker-alertas ya traen pytest en requirements.txt.
+          # Cada servicio separa las dependencias de test (pytest, httpx) en
+          # requirements-dev.txt; requirements.txt es lo que va a la imagen de producción.
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
           else
@@ -74,3 +74,63 @@ jobs:
 
       - name: Correr tests
         run: pytest
+
+  # Controles que no son tests unitarios pero se rompen fácil si nadie los mira.
+  calidad:
+    name: calidad (copias, contraste, sintaxis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Las copias compartidas entre servicios siguen idénticas
+        run: python scripts/verificar_copias.py
+
+      - name: Contraste de colores WCAG AA (4.5:1)
+        run: python scripts/auditar_contraste.py frontend/index.html
+
+      - name: Los compose y la configuración de monitoreo son YAML/JSON válidos
+        run: |
+          pip install pyyaml
+          python - <<'PY'
+          import json, yaml, glob
+          for f in ["docker-compose.yml", "docker-compose.override.yml", "docker-compose.prod.yml",
+                    "observabilidad/prometheus.yml", "observabilidad/alertas.yml"] + glob.glob("observabilidad/grafana/provisioning/*/*.yml"):
+              yaml.safe_load(open(f)); print("ok", f)
+          for f in glob.glob("observabilidad/grafana/dashboards/*.json"):
+              json.load(open(f)); print("ok", f)
+          PY
+
+      - name: Sintaxis del JavaScript del frontend
+        run: |
+          for f in frontend/app.js frontend/movimientos.js frontend/clientes.js frontend/solicitudes.js frontend/vistas.js; do
+            node --check "$f" && echo "ok $f"
+          done
+
+      - name: Compose de producción (con variables de relleno) se interpola sin errores
+        run: |
+          DOMINIO=ejemplo.com IMAGE_PREFIX=ghcr.io/ejemplo/jugueteria AUTH_SECRET_KEY=x AUTH_ADMIN_EMAIL=a@b.com \
+          AUTH_ADMIN_PASSWORD=x RABBITMQ_DEFAULT_USER=u RABBITMQ_DEFAULT_PASS=p GRAFANA_ADMIN_PASSWORD=g \
+          docker compose -f docker-compose.prod.yml config --quiet && echo "ok docker-compose.prod.yml"
+
+  # Evidencia de seguridad de la cadena de suministro. No bloquea (continue-on-error): informa.
+  dependencias:
+    name: vulnerabilidades en dependencias
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: pip-audit de cada servicio
+        run: |
+          pip install pip-audit
+          for s in auth productos clientes movimientos worker-alertas; do
+            echo "=== $s"; pip-audit -r services/$s/requirements.txt || true
+          done

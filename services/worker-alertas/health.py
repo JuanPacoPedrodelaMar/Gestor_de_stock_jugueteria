@@ -23,6 +23,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
+import observabilidad
+
 logger = logging.getLogger("worker-alertas.health")
 
 SERVICIO = "worker-alertas"
@@ -71,6 +73,14 @@ class EstadoSalud:
 def _crear_handler(estado: EstadoSalud):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.rstrip("/") == "/metrics":
+                datos = observabilidad.REGISTRO.exponer().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", observabilidad.CONTENT_TYPE_METRICAS)
+                self.send_header("Content-Length", str(len(datos)))
+                self.end_headers()
+                self.wfile.write(datos)
+                return
             if self.path.rstrip("/") == "/health":
                 codigo, cuerpo = estado.evaluar()
             else:

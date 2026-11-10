@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -8,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core import observabilidad
 from app.database.db import Base, engine
 from app.models import cliente as _modelo_cliente  # noqa: F401  (registra el modelo en Base)
 from app.routers import cliente_router
@@ -36,10 +38,34 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: en desarrollo "*" (el frontend corre en otro puerto). En un entorno real
+# se define CORS_ORIGINS con el origen del frontend (varios, separados por coma).
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+
+observabilidad.configurar_logging("clientes")
+observabilidad.instalar(app, "clientes")
+
+
+def _metricas_de_negocio(registro) -> None:
+    from sqlalchemy import func
+
+    from app.database.db import SessionLocal
+    from app.models.cliente import Cliente
+
+    db = SessionLocal()
+    try:
+        total = db.query(func.count(Cliente.id_cliente)).scalar() or 0
+    finally:
+        db.close()
+    registro.gauge("clientes_total", "Clientes registrados.", total)
+
+
+observabilidad.REGISTRO.al_exponer(_metricas_de_negocio)
+
 # CORS: permite que el frontend, servido desde otro origen/puerto, llame a la API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción conviene restringir al dominio real del frontend.
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

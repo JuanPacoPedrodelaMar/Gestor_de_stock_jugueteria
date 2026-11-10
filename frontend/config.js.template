@@ -1,10 +1,13 @@
 // Generado automáticamente al iniciar el contenedor (ver docker-entrypoint.sh).
 // No editar a mano: los valores ${...} se reemplazan con variables de entorno.
+// Con el valor "origen" la API se pide al mismo origen que sirve el panel (producción:
+// todo pasa por el gateway de nginx, ver nginx.conf). Cualquier otro valor se usa tal cual.
+const url = (valor) => (valor === "origen" ? window.location.origin : valor);
 window.APP_CONFIG = {
-  PRODUCTOS_API_URL: "${PRODUCTOS_API_URL}",
-  AUTH_API_URL: "${AUTH_API_URL}",
-  MOVIMIENTOS_API_URL: "${MOVIMIENTOS_API_URL}",
-  CLIENTES_API_URL: "${CLIENTES_API_URL}",
+  PRODUCTOS_API_URL: url("${PRODUCTOS_API_URL}"),
+  AUTH_API_URL: url("${AUTH_API_URL}"),
+  MOVIMIENTOS_API_URL: url("${MOVIMIENTOS_API_URL}"),
+  CLIENTES_API_URL: url("${CLIENTES_API_URL}"),
   // Acceso rápido por rol (solo entorno de pruebas). Si HABILITAR_USUARIOS_PRUEBA
   // no es "true", el entrypoint deja acá "false" y credenciales vacías.
   USUARIOS_PRUEBA: {

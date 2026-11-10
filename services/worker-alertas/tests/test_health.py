@@ -109,3 +109,13 @@ def test_si_el_puerto_esta_ocupado_no_rompe_al_worker(servidor):
     puerto_ocupado = int(base.rsplit(":", 1)[1])
 
     assert health.iniciar_servidor(estado, puerto=puerto_ocupado, host="127.0.0.1") is None
+
+
+def test_metrics_expone_el_formato_de_prometheus(servidor):
+    import observabilidad
+
+    observabilidad.REGISTRO.inc("worker_mensajes_total", "Mensajes procesados por el worker según el resultado.", {"resultado": "alerta"})
+    with urllib.request.urlopen(f"{servidor[1]}/metrics", timeout=3) as resp:
+        assert resp.status == 200
+        assert resp.headers["Content-Type"].startswith("text/plain; version=0.0.4")
+        assert 'worker_mensajes_total{resultado="alerta"}' in resp.read().decode()

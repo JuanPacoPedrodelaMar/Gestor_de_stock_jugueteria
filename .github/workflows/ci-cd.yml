@@ -1,0 +1,208 @@
+name: CI/CD
+
+# Pipeline completo: prueba de SISTEMA con todos los contenedores -> publica las
+# imágenes versionadas en el registry (GHCR) -> despliega -> prueba de humo.
+#
+#   push a main        : sistema + publicar (imágenes con tag del commit y "latest")
+#   tag vX.Y.Z[-algo]  : sistema + publicar (tag semver) + desplegar + release
+#   pull_request       : solo la prueba de sistema (no publica nada)
+#   a pedido           : "Run workflow"
+#
+# Secretos/variables que hay que cargar en GitHub (ver docs/DESPLIEGUE.md):
+#   Secrets:   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY   (si faltan, el despliegue se omite)
+#   Variables: DEPLOY_DOMINIO (ej. mi-jugueteria.duckdns.org), DEPLOY_PATH (default /opt/jugueteria)
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------------------------
+  sistema:
+    name: prueba de sistema (docker compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      AUTH_SECRET_KEY: clave-efimera-solo-para-ci-no-es-un-secreto
+      # El override de desarrollo (docker-compose.override.yml) activa los usuarios de prueba.
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Levantar el sistema completo y esperar a que todo esté sano
+        # --wait: Compose espera a que cada servicio pase su healthcheck (falla si alguno no llega).
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: Prueba de sistema (recorridos R1, R3, idempotencia, seguridad, métricas, falla parcial R2)
+        run: python3 scripts/prueba_sistema.py --caida
+
+      - name: Prueba de carga corta (latencia media y p95)
+        run: |
+          python3 scripts/prueba_carga.py --niveles 1,10,25 --duracion 8 \
+            --entorno "GitHub Actions (ubuntu-latest, Docker Compose)" --salida resultados_carga.md
+
+      - name: Guardar el informe de carga
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultados-carga
+          path: resultados_carga.md
+
+      - name: Logs del sistema si algo falló
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Apagar
+        if: always()
+        run: docker compose down -v
+
+  # -------------------------------------------------------------------------------------------
+  publicar:
+    name: publicar imagen (${{ matrix.componente }})
+    needs: sistema
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { componente: auth,           contexto: services/auth }
+          - { componente: productos,      contexto: services/productos }
+          - { componente: clientes,       contexto: services/clientes }
+          - { componente: movimientos,    contexto: services/movimientos }
+          - { componente: worker-alertas, contexto: services/worker-alertas }
+          - { componente: frontend,       contexto: frontend }
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Nombre de la imagen en minúsculas (GHCR lo exige)
+        run: echo "IMAGEN=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jugueteria-${{ matrix.componente }}" >> "$GITHUB_ENV"
+
+      # QEMU: permite construir la variante arm64 (Oracle Cloud Always Free usa ARM)
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Etiquetas (sha del commit, semver si es tag, latest en main)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGEN }}
+          tags: |
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Construir y publicar
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.contexto }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.componente }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.componente }}
+
+  # -------------------------------------------------------------------------------------------
+  desplegar:
+    name: desplegar en el servidor
+    needs: publicar
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: produccion
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DOMINIO: ${{ vars.DEPLOY_DOMINIO }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/jugueteria' }}
+      IMAGE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: ¿Hay un servidor configurado?
+        id: config
+        run: |
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "Sin DEPLOY_HOST / DEPLOY_SSH_KEY: se omite el despliegue (ver docs/DESPLIEGUE.md)."
+            echo "listo=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "listo=si" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Copiar archivos de despliegue al servidor
+        if: steps.config.outputs.listo == 'si'
+        run: |
+          install -m 600 /dev/null ~/clave
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/clave
+          SSH="ssh -i $HOME/clave -o StrictHostKeyChecking=accept-new"
+          $SSH "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH"
+          scp -i ~/clave -o StrictHostKeyChecking=accept-new -r \
+            docker-compose.prod.yml despliegue observabilidad "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Descargar las imágenes y reiniciar
+        if: steps.config.outputs.listo == 'si'
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          ssh -i ~/clave -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" bash -s <<EOF
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          # El archivo .env.prod ya existe en el servidor (con los secretos); solo se actualiza la versión.
+          grep -q '^IMAGE_PREFIX=' .env.prod && sed -i "s|^IMAGE_PREFIX=.*|IMAGE_PREFIX=ghcr.io/$OWNER/jugueteria|" .env.prod || echo "IMAGE_PREFIX=ghcr.io/$OWNER/jugueteria" >> .env.prod
+          grep -q '^IMAGE_TAG=' .env.prod && sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${IMAGE_TAG#v}|" .env.prod || echo "IMAGE_TAG=${IMAGE_TAG#v}" >> .env.prod
+          docker compose -f docker-compose.prod.yml --env-file .env.prod pull
+          docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --remove-orphans
+          docker image prune -f
+          EOF
+
+      - name: Prueba de humo del despliegue
+        if: steps.config.outputs.listo == 'si'
+        run: |
+          URL="https://$DOMINIO"
+          for i in $(seq 1 30); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz")" = "200" ] && break
+            sleep 10
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz")" = "200"
+          # Atraviesa Caddy -> gateway -> auth -> base y Redis: un login inválido debe dar 401 (no 5xx).
+          CODIGO=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/api/v1/auth/login" \
+            -H 'Content-Type: application/json' -d '{"email":"nadie@ejemplo.com","password":"incorrecta123"}')
+          echo "login inválido -> $CODIGO"; test "$CODIGO" = "401"
+          # /metrics y el seed NO deben estar expuestos
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$URL/metrics")" = "404"
+          echo "Despliegue verificado en $URL"
+
+  # -------------------------------------------------------------------------------------------
+  release:
+    name: publicar el release en GitHub
+    needs: desplegar
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Crear el release con notas automáticas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes --title "${{ github.ref_name }}"

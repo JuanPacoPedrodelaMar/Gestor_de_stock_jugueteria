@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core import observabilidad
 from app.database.db import Base, SessionLocal, engine
 from app.database.migraciones import migrar_esquema
 from app.messaging import outbox
@@ -59,10 +60,41 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: en desarrollo "*" (el frontend corre en otro puerto). En un entorno real
+# se define CORS_ORIGINS con el origen del frontend (varios, separados por coma).
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+
+observabilidad.configurar_logging("movimientos")
+observabilidad.instalar(app, "movimientos")
+
+
+def _metricas_de_negocio(registro) -> None:
+    """Gauges de consistencia, calculados al momento de cada lectura de /metrics."""
+    from sqlalchemy import func
+
+    from app.models.movimiento import ESTADO_PENDIENTE, Movimiento
+    from app.models.outbox import OutboxEvento
+
+    db = SessionLocal()
+    try:
+        pendientes = (
+            db.query(func.count(Movimiento.id_movimiento)).filter(Movimiento.estado == ESTADO_PENDIENTE).scalar() or 0
+        )
+        sin_publicar = (
+            db.query(func.count(OutboxEvento.id)).filter(OutboxEvento.publicado_en.is_(None)).scalar() or 0
+        )
+    finally:
+        db.close()
+    registro.gauge("movimientos_pendientes", "Movimientos pendientes de confirmación (saga incompleta).", pendientes)
+    registro.gauge("outbox_eventos_sin_publicar", "Eventos del outbox todavía sin publicar en RabbitMQ.", sin_publicar)
+
+
+observabilidad.REGISTRO.al_exponer(_metricas_de_negocio)
+
 # CORS: permite que el frontend, servido desde otro origen/puerto, llame a la API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción conviene restringir al dominio real del frontend.
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

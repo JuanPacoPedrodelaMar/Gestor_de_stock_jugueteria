@@ -21,6 +21,8 @@ from typing import Optional
 
 import httpx
 
+from app.core import observabilidad
+
 MOVIMIENTOS_SERVICE_URL = os.getenv("MOVIMIENTOS_SERVICE_URL", "http://localhost:8002")
 TIMEOUT_SEGUNDOS = float(os.getenv("MOVIMIENTOS_SERVICE_TIMEOUT", "5"))
 
@@ -42,6 +44,7 @@ def contar_movimientos(id_producto: int, token: Optional[str]) -> int:
     """
     url = f"{MOVIMIENTOS_SERVICE_URL}/api/v1/productos/{id_producto}/movimientos/cantidad"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
+    headers.update(observabilidad.cabeceras_propagacion())  # X-Request-ID: correlación entre servicios
     try:
         respuesta = httpx.get(url, headers=headers, timeout=TIMEOUT_SEGUNDOS)
     except httpx.TimeoutException as error:

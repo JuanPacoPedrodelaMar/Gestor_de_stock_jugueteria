@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
+from app.core import observabilidad
 from app.database.db import get_db
 from app.core.dependencies import requerir_rol
 from app.models.usuario import TODOS_LOS_ROLES
@@ -26,6 +27,13 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Auth"])
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _contar_login(resultado: str) -> None:
+    """Métrica de intentos de login (útil para detectar fuerza bruta: ver docs/OBSERVABILIDAD.md)."""
+    observabilidad.REGISTRO.inc(
+        "auth_login_total", "Intentos de login por resultado.", {"resultado": resultado}
+    )
+
+
 @router.post("/login", response_model=TokenResponse, status_code=status.HTTP_200_OK)
 def login(datos: LoginRequest, db: Session = Depends(get_db)):
     """
@@ -36,16 +44,19 @@ def login(datos: LoginRequest, db: Session = Depends(get_db)):
     try:
         access_token, refresh_token = auth_service.login(db, datos.identificador, datos.password)
     except CuentaBloqueada as e:
+        _contar_login("bloqueado")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Demasiados intentos fallidos. Probá de nuevo en {e.segundos_restantes} segundos.",
         )
     except CredencialesInvalidas:
+        _contar_login("credenciales_invalidas")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="DNI/email o contraseña incorrectos.",
         )
 
+    _contar_login("exitoso")
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 

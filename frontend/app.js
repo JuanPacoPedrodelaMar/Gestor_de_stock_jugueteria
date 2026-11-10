@@ -569,7 +569,7 @@ function formatearTiempoRestante(segundos) {
 function botonesDeProducto(prod) {
   const botones = [];
   if (puedeEditarProductos()) {
-    botones.push(`<button class="btn-secundario btn-chico" onclick="editarProducto(${prod.id_producto})">Editar</button>`);
+    botones.push(`<button class="btn-secundario btn-chico" data-accion="editar" data-id="${prod.id_producto}">Editar</button>`);
   }
   if (prod.puede_eliminar) {
     if (prod.segundos_restantes_eliminar != null) {
@@ -577,14 +577,24 @@ function botonesDeProducto(prod) {
       botones.push(
         `<button class="btn-peligro btn-chico btn-eliminar-ventana" data-vence="${vence}" ` +
         `title="Lo cargaste vos hace poco: podés eliminarlo hasta que se termine el tiempo." ` +
-        `onclick="eliminarProducto(${prod.id_producto}, true)">Eliminar (${formatearTiempoRestante(prod.segundos_restantes_eliminar)})</button>`
+        `data-accion="eliminar" data-ventana="1" data-id="${prod.id_producto}">Eliminar (${formatearTiempoRestante(prod.segundos_restantes_eliminar)})</button>`
       );
     } else {
-      botones.push(`<button class="btn-peligro btn-chico" onclick="eliminarProducto(${prod.id_producto})">Eliminar</button>`);
+      botones.push(`<button class="btn-peligro btn-chico" data-accion="eliminar" data-id="${prod.id_producto}">Eliminar</button>`);
     }
   }
   return botones.join(" ");
 }
+
+// Los botones de cada fila usan data-accion (no onclick inline): así la Content-Security-Policy
+// puede prohibir scripts en línea (ver nginx.conf).
+tabla.addEventListener("click", (evento) => {
+  const boton = evento.target.closest("button[data-accion]");
+  if (!boton || !tabla.contains(boton)) return;
+  const id = Number(boton.dataset.id);
+  if (boton.dataset.accion === "editar") editarProducto(id);
+  else if (boton.dataset.accion === "eliminar") eliminarProducto(id, boton.dataset.ventana === "1");
+});
 
 function renderizarTabla(productos) {
   if (!productos.length) {
@@ -924,12 +934,30 @@ function crearCombo({
   let ultimaBusqueda = 0;
   let temporizador = null;
 
+  // Accesibilidad (patrón ARIA "combobox con listbox"): el lector de pantalla anuncia
+  // que el campo despliega una lista, si está abierta y cuál es la opción resaltada.
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  if (lista.id) input.setAttribute("aria-controls", lista.id);
+  lista.setAttribute("role", "listbox");
+
+  function sincronizarAria() {
+    input.setAttribute("aria-expanded", String(!lista.hidden));
+    const activa = lista.hidden ? null : lista.querySelector(".dropdown-opcion.resaltada");
+    if (activa && activa.id) input.setAttribute("aria-activedescendant", activa.id);
+    else input.removeAttribute("aria-activedescendant");
+  }
+
   function marcarResaltada() {
     lista.querySelectorAll(".dropdown-opcion[data-i]").forEach((el) => {
-      el.classList.toggle("resaltada", Number(el.dataset.i) === resaltada);
+      const esta = Number(el.dataset.i) === resaltada;
+      el.classList.toggle("resaltada", esta);
+      el.setAttribute("aria-selected", String(esta));
     });
     const activa = lista.querySelector(".dropdown-opcion.resaltada");
     if (activa && activa.scrollIntoView) activa.scrollIntoView({ block: "nearest" });
+    sincronizarAria();
   }
 
   function dibujar(items) {
@@ -939,15 +967,17 @@ function crearCombo({
       const mensaje = sinResultados(input.value);
       if (mensaje == null) {
         lista.hidden = true;
+        sincronizarAria();
         return;
       }
       lista.innerHTML = `<div class="dropdown-opcion sin-resultados">${escaparHtml(mensaje)}</div>`;
     } else {
       lista.innerHTML = items
-        .map((o, i) => `<div class="dropdown-opcion" role="option" data-i="${i}">${escaparHtml(o.texto)}</div>`)
+        .map((o, i) => `<div class="dropdown-opcion" role="option" id="${lista.id || "combo"}-op-${i}" aria-selected="false" data-i="${i}">${escaparHtml(o.texto)}</div>`)
         .join("");
     }
     lista.hidden = false;
+    sincronizarAria();
   }
 
   async function mostrar() {
@@ -966,6 +996,7 @@ function crearCombo({
     ultimaBusqueda++;
     clearTimeout(temporizador);
     lista.hidden = true;
+    sincronizarAria();
   }
 
   function elegir(indice) {

@@ -1,20 +1,34 @@
 # Gestor de Stock — Juguetería
 
-Sistema de gestión de stock para una juguetería. Compuesto por tres APIs
-REST (FastAPI), un worker de mensajería asíncrona y un panel de
-administración (HTML/JS) servido con nginx.
+Sistema de gestión de stock para una juguetería. Compuesto por cuatro APIs
+REST (FastAPI: auth, productos, clientes y movimientos), un worker de
+mensajería asíncrona y un panel de administración (HTML/JS) servido con nginx,
+que además actúa de *gateway*.
+
+> **Versión AE4** — ver [`docs/CAMBIOS_AE4.md`](./docs/CAMBIOS_AE4.md) para lo que se agregó:
+> observabilidad (logs JSON, métricas, correlación), resiliencia (circuit breaker),
+> CI/CD con registry y despliegue, endurecimiento de seguridad y accesibilidad.
 
 ## Estructura del repositorio
 
 ```
 .
-├── docker-compose.yml
-├── .env.example
-├── .github/workflows/     # CI: corre los tests de los 4 servicios en cada push
+├── docker-compose.yml           # base con valores SEGUROS por defecto
+├── docker-compose.override.yml  # desarrollo (se aplica solo con "docker compose up")
+├── docker-compose.prod.yml      # producción: imágenes del registry, TLS, secretos obligatorios
+├── .env.example · .env.prod.example
+├── .github/workflows/     # tests.yml (tests + calidad) y ci-cd.yml (sistema → registry → despliegue)
+├── observabilidad/        # Prometheus, reglas de alerta y dashboard de Grafana
+├── despliegue/            # Caddyfile (TLS)
+├── scripts/               # prueba_sistema.py · prueba_carga.py · verificar_copias.py · auditar_contraste.py
 ├── ejecutar_docker.ps1    # Windows: levanta TODO con Docker Compose (crea .env y el secreto si faltan)
 ├── ejecutar_local.ps1     # Windows, sin Docker: levanta el sistema o corre los tests (-Tests, -Bateria, -Todo)
 ├── docs/
-│   └── ARQUITECTURA.md    # Diagramas (servicios, capas, flujos, consistencia, concurrencia)
+│   ├── ARQUITECTURA.md    # Diagramas (servicios, capas, flujos, consistencia, concurrencia)
+│   ├── adr/               # Decisiones de arquitectura (9 ADR)
+│   ├── OBSERVABILIDAD.md  # Logs, métricas, correlación, alertas
+│   ├── DESPLIEGUE.md      # Servidor, secretos, pipeline, rollback
+│   └── EVIDENCIAS_AE4.md  # Criterio de la consigna → dónde está la evidencia y cómo reproducirla
 ├── services/
 │   ├── auth/              # Login, JWT (access/refresh), roles (FastAPI + SQLite + Redis para la blacklist)
 │   ├── productos/         # CRUD de Producto + ajuste atómico e idempotente de stock (FastAPI + SQLite)
@@ -123,7 +137,8 @@ docker compose down -v
 
 ## Usuarios y acceso rápido (entorno de pruebas)
 
-Con `HABILITAR_USUARIOS_PRUEBA=true` (valor por defecto en `.env.example`),
+Con `HABILITAR_USUARIOS_PRUEBA=true` (es el valor por defecto **solo en desarrollo**:
+lo activa `docker-compose.override.yml`; el compose base y el de producción lo dejan en `false`),
 `auth` crea una cuenta por rol al arrancar, y la pantalla de login del
 frontend muestra un botón de **acceso rápido** por cada una. Se entra con el
 **DNI** (el admin también con su email):
@@ -960,6 +975,85 @@ las respaldan en el README de cada servicio):
   worker: el mínimo es el punto de reposición, así que estar *en* el mínimo ya
   es "hay que reponer". Con mínimo 0, además, alerta cuando el producto se agota.
 
+## Observabilidad
+
+Logs JSON con ID de correlación, métricas Prometheus en `GET /metrics` de cada servicio, un
+dashboard de Grafana y reglas de alerta. Guía completa en [`docs/OBSERVABILIDAD.md`](./docs/OBSERVABILIDAD.md).
+
+```bash
+docker compose --profile observabilidad up -d
+# Grafana http://localhost:3000 (admin/admin) · Prometheus http://localhost:9090
+```
+Un `X-Request-ID` atraviesa nginx → APIs → evento de RabbitMQ → worker, así que una venta se sigue
+de punta a punta con un solo ID (`docker compose logs ... | grep <id>`).
+
+## Resiliencia
+
+- **Circuit breaker** en las llamadas de `movimientos` a `productos` y `clientes`: tras 5 fallos
+  seguidos rechaza al instante (503) durante 15 s y luego prueba con una sola llamada; así una
+  caída de `productos` no arrastra a `movimientos` (ver [ADR 0005](./docs/adr/0005-resiliencia-circuit-breaker.md)).
+- **Reintentos acotados** con backoff y jitter, solo donde es seguro (lecturas, y la escritura
+  idempotente únicamente ante errores de conexión).
+- La **saga** deja el movimiento `pendiente` y lo completa luego con la misma clave: sin doble descuento.
+- **Prueba de falla** (recorrido R2): `python scripts/prueba_sistema.py --caida` detiene `productos`
+  en medio de una venta, verifica el 503, el movimiento pendiente y el circuito abierto, y comprueba
+  que al volver el reintento descuenta el stock **una sola vez**. También corre en el pipeline.
+- **Límite honesto:** no hay réplicas (SQLite). La disponibilidad es degradación controlada +
+  recuperación automática, no alta disponibilidad activa-activa ([ADR 0007](./docs/adr/0007-sqlite-wal-y-limite-de-ha.md)).
+
+## Rendimiento: latencia media y p95
+
+Se mide con `scripts/prueba_carga.py` (biblioteca estándar; concurrencia creciente; media, p50, p95, p99
+y tasa de error). Para regenerar esta sección con números **reales** de tu equipo:
+
+```bash
+docker compose up -d --build
+python scripts/prueba_carga.py --niveles 1,10,25,50 --duracion 15 --actualizar-readme README.md
+```
+
+<!-- CARGA:INICIO -->
+
+_Todavía no se midió en este entorno: ejecutá el comando de arriba y esta tabla se completa sola. El
+pipeline de CI también guarda un informe corto (`resultados-carga`) en cada ejecución._
+
+<!-- CARGA:FIN -->
+
+**Cuello de botella analizado.** La escritura (`POST /api/v1/movimientos`) es la operación más cara:
+una llamada síncrona a `productos`, varios commits y **un único escritor en SQLite**. Antes, con el
+pool por defecto de SQLAlchemy (5 + 10) 150 ventas simultáneas agotaban las conexiones
+(`QueuePool limit of size 5 overflow 10 reached`) y la mayoría no obtenía respuesta; con `pool_size=20`
+y `max_overflow=60` se resolvieron todas. Mejora aplicada: pool 20 + 60 (`DB_POOL_SIZE`,
+`DB_MAX_OVERFLOW`) y SQLite en modo **WAL** con `busy_timeout` de 5 s (los lectores ya no bloquean al
+escritor). Para cuantificar el antes/después, ejecutar la prueba con `DB_POOL_SIZE=5 DB_MAX_OVERFLOW=10`
+y luego con los valores nuevos, y comparar el p95 y los errores en el nivel de 50 de concurrencia. El techo que
+queda es el escritor único de SQLite: superarlo exige Postgres ([ADR 0007](./docs/adr/0007-sqlite-wal-y-limite-de-ha.md)).
+
+## Despliegue y CI/CD
+
+- `tests.yml`: tests de los 5 servicios + controles de calidad (copias idénticas, contraste WCAG,
+  sintaxis JS, compose válidos) + `pip-audit`.
+- `ci-cd.yml`: **prueba de sistema** con todos los contenedores → **publicación de imágenes versionadas
+  en GHCR** → **despliegue por SSH** → **prueba de humo** → release.
+- Producción: `docker-compose.prod.yml` (un solo punto de entrada HTTPS con Caddy, secretos obligatorios,
+  sin usuarios de prueba). Paso a paso en [`docs/DESPLIEGUE.md`](./docs/DESPLIEGUE.md).
+
+```bash
+git tag v1.0.0-ae4 && git push origin v1.0.0-ae4     # dispara el pipeline completo
+```
+
+## Desarrollo vs. producción (Docker Compose)
+
+| | Desarrollo (`docker compose up`) | Producción (`-f docker-compose.prod.yml`) |
+|---|---|---|
+| Archivos | `docker-compose.yml` + `docker-compose.override.yml` (automático) | `docker-compose.prod.yml` solo |
+| Usuarios de prueba / seed | **sí** (override) | **no** |
+| Puertos publicados | APIs, panel, RabbitMQ (5672/15672) | solo 80/443 (Caddy) |
+| Imágenes | se construyen localmente | del registry (GHCR) |
+| Secretos | `.env` | `.env.prod`, **obligatorios** |
+
+El `docker-compose.yml` base ya no activa usuarios de prueba ni el endpoint de seed por defecto:
+solo lo hace el override de desarrollo.
+
 ## Healthchecks
 
 - `auth`: `GET /health` → `{"status": "ok", "service": "auth"}`
@@ -1006,17 +1100,17 @@ para el detalle de cada una. Las más relevantes:
   perderse. Es lo deseado, pero la tabla `outbox_eventos` crece mientras tanto.
 - **Modo local sin Docker:** sin RabbitMQ ni worker (los eventos quedan en el
   outbox), y la revocación de tokens suma una llamada HTTP a `auth` por request.
-- Los headers de seguridad y el filtro de caracteres existen en `productos`
-  y `movimientos`; `auth` y el frontend (nginx) todavía no los tienen.
+- Los headers de seguridad existen ahora en las 4 APIs y en nginx (con CSP). El filtro de caracteres
+  de entrada existe en `productos`, `movimientos` y `clientes`.
 - El filtro de caracteres de `productos` es una lista de caracteres
   prohibidos, no una lista blanca: es una capa adicional (ver "Seguridad de
   las APIs").
-- Con la configuración por defecto de SQLAlchemy (pool de 5 conexiones más 10
-  de desborde), `productos` puede quedarse sin conexiones libres bajo muchas
-  ventas exitosas simultáneas: en una prueba local con 150 ventas simultáneas
-  y stock suficiente, la mayoría de las peticiones no obtuvo respuesta
-  (`QueuePool limit of size 5 overflow 10 reached`), mientras que con
-  `pool_size=20` y `max_overflow=60` en `create_engine` se resolvieron todas.
-  Ese ajuste todavía no está aplicado, y la prueba de 20 peticiones de la
-  batería no llega a exponerlo.
-- El frontend no tiene tests automáticos.
+- **El pool de conexiones y el modo WAL de SQLite ya están aplicados** (ver «Rendimiento»); el techo de
+  concurrencia de escritura sigue siendo el escritor único de SQLite.
+- **Sin alta disponibilidad con réplicas** (SQLite; relay del outbox de instancia única): ver ADR 0007.
+- **Sin trazas distribuidas con spans** (OpenTelemetry/Jaeger): la correlación por `X-Request-ID` cubre
+  el seguimiento de un pedido, no la medición por tramo. Sin Alertmanager (las alertas se ven en Prometheus).
+- **Producto dado de baja:** por API todavía acepta ajustes de stock (decisión de negocio abierta, ADR 0009).
+- **BOLA:** las solicitudes de stock son por titular (cada usuario ve las suyas; el admin todas). El
+  historial de movimientos es compartido entre roles de venta por diseño (un vendedor consulta el historial de un cliente).
+- El frontend no tiene tests de interfaz automatizados: el pipeline valida la sintaxis del JS y el contraste de colores (WCAG AA); la navegación por teclado se verifica a mano.

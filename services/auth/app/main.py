@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core import observabilidad
 from app.database.db import Base, engine, SessionLocal
 from app.database.migraciones import migrar_esquema
 from app.models.usuario import Usuario, RolUsuario
@@ -111,15 +112,45 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: en desarrollo "*" (el frontend corre en otro puerto). En un entorno real
+# se define CORS_ORIGINS con el origen del frontend (varios, separados por coma).
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+
+observabilidad.configurar_logging("auth")
+observabilidad.instalar(app, "auth")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
     # POST /refresh devuelve el nuevo refresh token en este header; sin
     # exponerlo, el navegador no deja que el JS del frontend lo lea (CORS).
     expose_headers=["X-New-Refresh-Token"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Encabezados de seguridad (se agregan a TODA respuesta, incluidos los errores)
+# ---------------------------------------------------------------------------
+ENCABEZADOS_SEGURIDAD = {
+    # Anti-sniffing: el navegador respeta el Content-Type declarado y no "adivina".
+    "X-Content-Type-Options": "nosniff",
+    # Anti-clickjacking: ningún sitio ajeno puede mostrar esta respuesta en un iframe.
+    "X-Frame-Options": "DENY",
+    # Equivalente moderno de X-Frame-Options (los navegadores nuevos lo priorizan).
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    # Las respuestas de auth llevan tokens: que ningún intermediario las guarde.
+    "Cache-Control": "no-store",
+}
+
+
+@app.middleware("http")
+async def agregar_encabezados_seguridad(request: Request, call_next):
+    response = await call_next(request)
+    for nombre, valor in ENCABEZADOS_SEGURIDAD.items():
+        response.headers[nombre] = valor
+    return response
 
 
 @app.exception_handler(RequestValidationError)
@@ -143,6 +174,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"error": True, "mensaje": "Error interno del servidor."},
+        # Este 500 lo arma la capa más externa de Starlette, por fuera del
+        # middleware de arriba: los encabezados se agregan acá a mano.
+        headers=ENCABEZADOS_SEGURIDAD,
     )
 
 

@@ -25,6 +25,7 @@ from typing import Callable, ContextManager, Optional
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core import observabilidad
 from app.messaging import publisher
 from app.models.outbox import OutboxEvento
 
@@ -84,12 +85,18 @@ def publicar_pendientes(
                     except Exception as error:
                         _registrar_fallo(db, evento, error)
                         error_registrado = True
+                        observabilidad.REGISTRO.inc(
+                            "outbox_publicaciones_total", "Intentos de publicación del outbox.", {"resultado": "fallo"}
+                        )
                         raise
                     evento.intentos += 1
                     evento.ultimo_error = None
                     evento.publicado_en = datetime.now(timezone.utc)
                     db.commit()
                     publicados += 1
+                    observabilidad.REGISTRO.inc(
+                        "outbox_publicaciones_total", "Intentos de publicación del outbox.", {"resultado": "ok"}
+                    )
         except Exception as error:
             if not error_registrado:
                 # Falló antes de poder publicar nada (típicamente: no hubo

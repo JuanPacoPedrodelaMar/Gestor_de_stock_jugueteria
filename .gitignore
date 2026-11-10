@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.prod.example
 
 # --- Bases de datos locales (nunca se versionan) ---
 *.db
@@ -28,7 +29,9 @@ htmlcov/
 node_modules/
 
 # --- Docker ---
-docker-compose.override.yml
+# docker-compose.override.yml SÍ se versiona: es la configuración de desarrollo (ver el archivo).
+# Para ajustes personales usar docker-compose.local.yml:
+docker-compose.local.yml
 
 # --- Editores / SO ---
 .vscode/

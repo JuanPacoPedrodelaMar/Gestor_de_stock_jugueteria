@@ -401,6 +401,100 @@ dentro de la propia sentencia `UPDATE ... WHERE stock_actual >= n`, así que
 la base resuelve la carrera atómicamente. Ver el `README.md` raíz, sección
 "Concurrencia", para el detalle del problema, el mecanismo y los tests.
 
+## Propiedad de datos (AE4)
+
+Cada servicio es **dueño exclusivo** de su base: ningún servicio lee la base de otro; solo se hablan por API o por eventos.
+
+```mermaid
+flowchart LR
+  subgraph auth_s[auth]
+    A[(auth.db<br/>usuarios)]
+  end
+  R[(Redis<br/>refresh tokens<br/>blacklist JWT)]
+  subgraph prod_s[productos]
+    P[(jugueteria.db<br/>productos<br/>ajustes_stock<br/>solicitudes_stock)]
+  end
+  subgraph cli_s[clientes]
+    C[(clientes.db<br/>clientes)]
+  end
+  subgraph mov_s[movimientos]
+    M[(movimientos.db<br/>movimientos<br/>outbox_eventos)]
+  end
+  subgraph wrk_s[worker-alertas]
+    W[(alertas_procesadas.db<br/>idempotencia)]
+  end
+  auth_s --- R
+  mov_s -- "HTTP: ajustar stock / consultar ajuste" --> prod_s
+  mov_s -- "HTTP: validar cliente" --> cli_s
+  prod_s -- "HTTP: ¿tiene movimientos? (borrado)" --> mov_s
+  mov_s -- "evento movimiento.registrado" --> Q{{RabbitMQ}}
+  Q --> wrk_s
+```
+
+| Dato | Dueño | Cómo lo obtienen los demás |
+|---|---|---|
+| Usuarios, roles | `auth` | Claims del JWT (sub, rol, dni); revocación vía Redis |
+| Productos y stock | `productos` | API REST (`movimientos` ajusta con `PATCH …/ajustar-stock`) |
+| Clientes | `clientes` | API REST; `movimientos` guarda una **copia** del documento al momento del movimiento |
+| Movimientos (historial) | `movimientos` | API REST; `productos` consulta solo si hay movimientos antes de borrar |
+| Eventos de stock | `movimientos` (outbox) | RabbitMQ, contrato en [`EVENTOS.md`](../services/movimientos/EVENTOS.md) |
+| Alertas ya procesadas | `worker-alertas` | Privado del worker |
+
+## Despliegue en producción (AE4)
+
+```mermaid
+flowchart TB
+  U[Navegador] -- "HTTPS 443" --> CD[Caddy<br/>TLS automático + HSTS]
+  CD --> FE[frontend<br/>nginx: panel + gateway<br/>CSP · rate limit de login · X-Request-ID]
+  FE -- "/api/v1/auth" --> AU[auth]
+  FE -- "/api/v1/productos<br/>/api/v1/solicitudes-stock" --> PR[productos]
+  FE -- "/api/v1/clientes" --> CL[clientes]
+  FE -- "/api/v1/movimientos<br/>/api/v1/productos/id/movimientos" --> MO[movimientos]
+  MO --> RB{{RabbitMQ}} --> WK[worker-alertas]
+  AU & PR & CL & MO --- RD[(Redis AOF)]
+  PM[Prometheus] -. "scrape /metrics (red interna)" .-> AU & PR & CL & MO & WK
+  GF[Grafana] --> PM
+```
+Solo Caddy publica puertos (80/443). `/metrics`, `/docs` y el seed **no** se exponen por el gateway. Prometheus y Grafana escuchan en `127.0.0.1` (acceso por túnel SSH).
+
+## Correlación de un pedido (AE4)
+
+```mermaid
+sequenceDiagram
+  participant N as Navegador
+  participant G as nginx (gateway)
+  participant M as movimientos
+  participant P as productos
+  participant O as outbox → RabbitMQ
+  participant W as worker-alertas
+  N->>G: POST /api/v1/movimientos
+  G->>M: X-Request-ID: abc123… (generado en el borde)
+  M->>P: PATCH ajustar-stock + X-Request-ID: abc123…
+  P-->>M: 200 (stock nuevo)
+  M->>O: confirmar + evento {…, request_id: "abc123…"}
+  M-->>N: 201 + X-Request-ID
+  O->>W: evento
+  W->>W: log de alerta con request_id abc123…
+```
+El mismo ID aparece en los logs JSON de los cuatro procesos (ver [`OBSERVABILIDAD.md`](./OBSERVABILIDAD.md)).
+
+## Circuit breaker de `movimientos` → `productos` (AE4)
+
+```mermaid
+stateDiagram-v2
+  [*] --> Cerrado
+  Cerrado --> Abierto: 5 fallos consecutivos
+  Abierto --> Semiabierto: pasan 15 s
+  Semiabierto --> Cerrado: la llamada de prueba sale bien
+  Semiabierto --> Abierto: la llamada de prueba falla
+  note right of Abierto
+    rechaza al instante con 503,
+    sin llamar a la red.
+    El movimiento queda pendiente.
+  end note
+```
+Cuenta como fallo: timeout, error de conexión o HTTP 5xx. Un 404/409 es una respuesta de negocio y cuenta como éxito. Decisión en [ADR 0005](./adr/0005-resiliencia-circuit-breaker.md).
+
 ## Limitaciones del sistema (resumen)
 
 Cada servicio documenta sus propias limitaciones en detalle en su README.
@@ -432,22 +526,18 @@ A nivel de sistema completo, las más relevantes hoy son:
   no el del instante del movimiento (no se conserva).
 - **`POST /productos` no tiene idempotencia**: en esa pantalla el frontend solo
   bloquea el botón y avisa ante fallas de red.
-- **Pool de conexiones por defecto**: SQLAlchemy abre hasta 15 conexiones
-  por servicio (5 más 10 de desborde). En una prueba local con 150 ventas
-  simultáneas y stock suficiente, `productos` dejó sin respuesta a la mayoría
-  de las peticiones (`QueuePool limit of size 5 overflow 10 reached`);
-  con `pool_size=20` y `max_overflow=60` en `create_engine` se resolvieron
-  todas. Ese ajuste todavía no está aplicado, y la prueba de 20 peticiones
-  de la batería no llega a exponerlo.
-- **Seguridad pensada para desarrollo**: CORS abierto (`allow_origins=["*"]`)
-  en los cuatro servicios, tokens guardados en `localStorage`, JWT firmados con
-  un secreto compartido (HS256) y credenciales por defecto (RabbitMQ y
-  usuarios de prueba) documentadas. Sí hay validación de entrada y headers
-  de seguridad en `productos` y `movimientos` (ver "Seguridad de entrada y
-  encabezados"); `auth` y el frontend todavía no los tienen.
+- **Pool de conexiones y SQLite**: ya aplicados `pool_size=20`, `max_overflow=60`, modo WAL y
+  `busy_timeout` (ver README, «Rendimiento»). El techo que queda es el escritor único de SQLite.
+- **Sin alta disponibilidad con réplicas ni trazas con spans**: ver [ADR 0007](./adr/0007-sqlite-wal-y-limite-de-ha.md)
+  y [ADR 0006](./adr/0006-observabilidad-propia.md).
+- **Seguridad**: en desarrollo CORS sigue abierto (`CORS_ORIGINS=*`; en producción se restringe y además no hace
+  falta porque todo pasa por un solo origen), los tokens están en `localStorage` (mitigado con una CSP estricta
+  sin scripts en línea) y los JWT se firman con un secreto compartido (HS256): comprometer un servicio permitiría
+  forjar tokens. Las 4 APIs y nginx envían headers de seguridad. Los usuarios de prueba y el seed solo se activan
+  en desarrollo.
 - **Modo local sin Docker** (`ejecutar_local.ps1`): sin RabbitMQ ni worker (los
   eventos quedan en el outbox), con un Redis en memoria por servicio. El logout
   sí es efectivo (se consulta a `auth`), a costa de una llamada HTTP por request;
   el estado en memoria de `auth` (bloqueo por intentos de login, rotación de
   refresh tokens) se pierde al reiniciar el servicio.
-- **El frontend no tiene tests automáticos.**
+- **El frontend no tiene tests de interfaz automatizados** (el pipeline valida sintaxis y contraste).

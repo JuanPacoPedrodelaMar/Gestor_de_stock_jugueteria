@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.clients.clientes_client import ClientesClientError
 from app.clients.productos_client import ProductosClientError
+from app.core import observabilidad
 from app.core.jwt_auth import obtener_token_y_payload, requerir_rol
 from app.database.db import get_db
 from app.messaging import outbox
@@ -59,6 +60,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["Movimientos"])
 
 ROLES_MOVIMIENTOS = ("admin", "ventas", "mixto")
+
+
+def _contar_movimiento(categoria: str, resultado: str) -> None:
+    """Métrica de negocio: movimientos registrados por categoría y resultado."""
+    observabilidad.REGISTRO.inc(
+        "movimientos_registrados_total", "Pedidos de registro de movimiento por categoría y resultado.",
+        {"categoria": categoria, "resultado": resultado},
+    )
 
 
 @router.post("/movimientos", response_model=MovimientoOut, status_code=status.HTTP_201_CREATED)
@@ -92,11 +101,18 @@ def crear_movimiento(
         )
     except ClientesClientError as error:
         # 404 (el cliente no existe) o 503 (Clientes no responde): no se registró nada.
+        _contar_movimiento(movimiento.categoria_movimiento, f"cliente_{error.status_code}")
         raise HTTPException(status_code=error.status_code, detail=error.mensaje)
     except IdempotencyKeyReutilizada as error:
+        _contar_movimiento(movimiento.categoria_movimiento, "clave_reutilizada")
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     except ProductosClientError as error:
         detalle = error.mensaje
+        # 409 = sin stock, 404 = producto inexistente (definitivos); 5xx/401/403 dejan el movimiento pendiente.
+        _contar_movimiento(
+            movimiento.categoria_movimiento,
+            f"rechazado_{error.status_code}" if error.status_code in ERRORES_DEFINITIVOS else f"pendiente_{error.status_code}",
+        )
         if error.status_code not in ERRORES_DEFINITIVOS:
             detalle += (
                 " El movimiento quedó pendiente de confirmación: reintentá y no se va a duplicar "
@@ -108,6 +124,7 @@ def crear_movimiento(
     # confirmación). Se avisa al relay para que lo publique enseguida; si
     # RabbitMQ no está, el evento espera en el outbox y se reintenta.
     outbox.despertar_relay()
+    _contar_movimiento(movimiento.categoria_movimiento, "confirmado")
     return nuevo
 
 

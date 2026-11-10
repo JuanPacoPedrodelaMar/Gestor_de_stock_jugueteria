@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -7,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core import observabilidad
 from app.database.db import Base, engine
 from app.database.migraciones import migrar_esquema
 from app.models import solicitud_stock as _modelo_solicitud  # noqa: F401  (registra la tabla en Base)
@@ -35,11 +37,42 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: en desarrollo "*" (el frontend corre en otro puerto). En un entorno real
+# se define CORS_ORIGINS con el origen del frontend (varios, separados por coma).
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+
+observabilidad.configurar_logging("productos")
+observabilidad.instalar(app, "productos")
+
+
+def _metricas_de_negocio(registro) -> None:
+    """Gauges de negocio, calculados al momento de cada lectura de /metrics."""
+    from sqlalchemy import func
+
+    from app.database.db import SessionLocal
+    from app.models.producto import Producto
+
+    db = SessionLocal()
+    try:
+        activos = db.query(func.count(Producto.id_producto)).filter(Producto.activo.is_(True)).scalar() or 0
+        bajos = (
+            db.query(func.count(Producto.id_producto))
+            .filter(Producto.activo.is_(True), Producto.stock_actual <= Producto.stock_minimo)
+            .scalar() or 0
+        )
+    finally:
+        db.close()
+    registro.gauge("productos_activos", "Productos activos en el catálogo.", activos)
+    registro.gauge("productos_stock_bajo", "Productos activos con stock_actual <= stock_minimo.", bajos)
+
+
+observabilidad.REGISTRO.al_exponer(_metricas_de_negocio)
+
 
 # CORS: permite que el frontend, servido desde otro origen/puerto, llame a la API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción conviene restringir al dominio real del frontend.
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
