@@ -62,8 +62,16 @@ Tras MAX_REINTENTOS fallidos ──► alertas.stock.bajo.dlq (inspección manua
   luego lo dead-letterea de vuelta a `alertas.stock.bajo`, reintentando el
   procesamiento.
 - **Máximo de reintentos**: `MAX_REINTENTOS` (5 por defecto). Se cuenta a
-  partir del header automático `x-death` que RabbitMQ agrega cada vez que
-  un mensaje es dead-letterado.
+  partir del header automático `x-death` de RabbitMQ. **Ojo:** ese header NO
+  tiene un registro por cada muerte sino **una entrada por par (cola, razón)
+  con un `count` acumulado**; por eso se suma el `count` de la entrada de la
+  cola principal con razón `rejected` (usar `len(x-death)` nunca pasaría de 2
+  y el mensaje no llegaría jamás a la DLQ).
+- **Mensajes inválidos**: si el cuerpo no es JSON o le faltan los enteros
+  `id_movimiento`, `id_producto`, `stock_actual`, `stock_minimo`, no se reintenta
+  (no se arreglaría): va directo a la DLQ con el header `x-motivo-dlq`.
+- **Observabilidad**: logs JSON con el `request_id` del pedido original y
+  `GET /metrics` (puerto 8003) con `worker_mensajes_total{resultado=...}`.
 - **DLQ final**: `alertas.stock.bajo.dlq`, para mensajes que agotaron los
   reintentos. Se puede inspeccionar desde el panel de RabbitMQ
   (`http://localhost:15672`).
@@ -106,8 +114,11 @@ Los tests (`tests/test_worker_alertas.py`) cubren:
 - **Evaluación de la alerta**: se dispara cuando `stock_actual <=
   stock_minimo` en el payload (incluido el caso exacto en el mínimo y el de
   mínimo 0 con producto agotado), y no se dispara cuando hay stock suficiente.
-- **Conteo de reintentos**: parseo del header `x-death` que RabbitMQ
-  agrega en cada dead-lettering.
+- **Conteo de reintentos**: formato real del header `x-death` (una entrada por
+  cola/razón con `count`), incluido el caso que antes nunca llegaba a la DLQ.
+- **Mensajes inválidos y flujo completo** de `procesar_mensaje` con un canal
+  falso: confirmación, duplicado, reintento (`nack` sin requeue), DLQ por
+  máximo de reintentos y DLQ por payload inválido.
 
 No requieren RabbitMQ ni Productos corriendo: el payload del evento se
 construye directamente en cada test (ya trae el snapshot del producto).

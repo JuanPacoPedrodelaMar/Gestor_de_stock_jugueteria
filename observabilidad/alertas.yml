@@ -1,0 +1,63 @@
+# Reglas de alerta. Se ven en Prometheus (pestaña Alerts) y en Grafana. No hay
+# Alertmanager: el objetivo acá es detectar y mostrar el problema; enviar
+# mails/Slack sería el siguiente paso (ver docs/OBSERVABILIDAD.md).
+groups:
+  - name: disponibilidad
+    rules:
+      - alert: ServicioCaido
+        expr: up == 0
+        for: 1m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "{{ $labels.job }} no responde a /metrics hace más de 1 minuto"
+      - alert: CircuitBreakerAbierto
+        expr: circuit_breaker_estado == 2
+        for: 1m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "El circuito hacia {{ $labels.nombre }} está abierto: movimientos pausados"
+
+  - name: rendimiento
+    rules:
+      - alert: LatenciaP95Alta
+        expr: histogram_quantile(0.95, sum by (le, servicio) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels: { severidad: media }
+        annotations:
+          resumen: "p95 de {{ $labels.servicio }} por encima de 1 s durante 5 minutos"
+      - alert: TasaDeErrores5xxAlta
+        expr: |
+          sum by (servicio) (rate(http_requests_total{estado=~"5.."}[5m]))
+            / sum by (servicio) (rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Más del 5% de errores 5xx en {{ $labels.servicio }}"
+
+  - name: consistencia
+    rules:
+      - alert: MovimientosPendientesSinResolver
+        expr: movimientos_pendientes > 0
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Hay movimientos pendientes hace más de 10 minutos: reconciliar (POST /api/v1/movimientos/reconciliar)"
+      - alert: OutboxSinPublicar
+        expr: outbox_eventos_sin_publicar > 0
+        for: 5m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Eventos sin publicar en RabbitMQ hace más de 5 minutos (¿broker caído o sin cola enlazada?)"
+      - alert: MensajesEnDLQ
+        expr: increase(worker_mensajes_total{resultado=~"dlq|invalido"}[15m]) > 0
+        labels: { severidad: media }
+        annotations:
+          resumen: "El worker envió mensajes a la dead-letter queue (inspeccionar alertas.stock.bajo.dlq)"
+
+  - name: seguridad
+    rules:
+      - alert: PosibleFuerzaBrutaEnLogin
+        expr: sum(increase(auth_login_total{resultado=~"credenciales_invalidas|bloqueado"}[5m])) > 30
+        labels: { severidad: media }
+        annotations:
+          resumen: "Más de 30 logins fallidos o bloqueados en 5 minutos"

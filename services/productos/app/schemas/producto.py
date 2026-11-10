@@ -6,6 +6,13 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Literal, Optional
 
 
+# Topes de los valores numéricos que entran por la API. Sin tope, un entero enorme
+# (> 2**63) rompe SQLite con un 500 y un precio infinito pasaría la validación
+# "ge=0" (Infinity >= 0) y rompería la serialización de TODO el listado.
+MAX_CANTIDAD = 1_000_000
+MAX_PRECIO = 100_000_000
+
+
 class ProductoBase(BaseModel):
     nombre: str = Field(..., min_length=1, max_length=120, description="Nombre del producto")
     marca: Optional[str] = Field(None, max_length=80)
@@ -41,6 +48,10 @@ class ProductoEntrada(ProductoBase):
     )
     marca: Optional[str] = Field(None, max_length=80, pattern=PATRON_TEXTO_SEGURO)
     categoria: Optional[str] = Field(None, max_length=60, pattern=PATRON_TEXTO_SEGURO)
+    precio_venta: float = Field(
+        ..., ge=0, le=MAX_PRECIO, allow_inf_nan=False, description="Precio de venta (0 a 100.000.000)"
+    )
+    stock_minimo: int = Field(..., ge=0, le=MAX_CANTIDAD, description="Stock mínimo (0 a 1.000.000)")
 
 
 class ProductoCreate(ProductoEntrada):
@@ -53,7 +64,7 @@ class ProductoCreate(ProductoEntrada):
     ficha del producto y sumar stock después mediante un movimiento de
     entrada, una vez que exista services/movimientos.
     """
-    stock_actual: int = Field(0, ge=0, description="Stock inicial al crear el producto")
+    stock_actual: int = Field(0, ge=0, le=MAX_CANTIDAD, description="Stock inicial al crear el producto")
 
 
 class ProductoUpdate(ProductoEntrada):
@@ -100,6 +111,8 @@ class AjusteStockIn(BaseModel):
     """
     delta: int = Field(
         ...,
+        ge=-MAX_CANTIDAD,
+        le=MAX_CANTIDAD,
         description="Cantidad a sumar (positivo) o restar (negativo) del stock_actual",
     )
 

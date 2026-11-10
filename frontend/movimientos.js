@@ -99,21 +99,49 @@ function renderizarListaProductos(filtro) {
     listaProductos.innerHTML = `<div class="dropdown-opcion sin-resultados">Sin coincidencias</div>`;
     return;
   }
+  resaltadaProducto = -1;
   listaProductos.innerHTML = filtrados
     .map(
-      (p) =>
-        `<div class="dropdown-opcion" data-id="${p.id_producto}">${escaparHtml(textoOpcionProducto(p))}</div>`
+      (p, i) =>
+        `<div class="dropdown-opcion" role="option" id="mov-productos-lista-op-${i}" aria-selected="false" data-id="${p.id_producto}">${escaparHtml(textoOpcionProducto(p))}</div>`
     )
     .join("");
+}
+
+// Accesibilidad: patrón ARIA combobox/listbox, igual que crearCombo() en app.js.
+let resaltadaProducto = -1;
+inputProducto.setAttribute("role", "combobox");
+inputProducto.setAttribute("aria-autocomplete", "list");
+inputProducto.setAttribute("aria-expanded", "false");
+inputProducto.setAttribute("aria-controls", "mov-productos-lista");
+listaProductos.setAttribute("role", "listbox");
+
+function resaltarProducto(indice) {
+  const opciones = [...listaProductos.querySelectorAll(".dropdown-opcion[data-id]")];
+  resaltadaProducto = indice;
+  opciones.forEach((el, i) => {
+    el.classList.toggle("resaltada", i === indice);
+    el.setAttribute("aria-selected", String(i === indice));
+  });
+  if (opciones[indice]) {
+    if (opciones[indice].scrollIntoView) opciones[indice].scrollIntoView({ block: "nearest" });
+    inputProducto.setAttribute("aria-activedescendant", opciones[indice].id);
+  } else {
+    inputProducto.removeAttribute("aria-activedescendant");
+  }
 }
 
 function mostrarListaProductos(filtro = "") {
   renderizarListaProductos(filtro);
   listaProductos.hidden = false;
+  inputProducto.setAttribute("aria-expanded", "true");
+  inputProducto.removeAttribute("aria-activedescendant");
 }
 
 function ocultarListaProductos() {
   listaProductos.hidden = true;
+  inputProducto.setAttribute("aria-expanded", "false");
+  inputProducto.removeAttribute("aria-activedescendant");
 }
 
 function seleccionarProducto(idProducto) {
@@ -151,11 +179,24 @@ inputProducto.addEventListener("keydown", (evento) => {
     ocultarListaProductos();
     return;
   }
+  const opciones = [...listaProductos.querySelectorAll(".dropdown-opcion[data-id]")];
+  if (evento.key === "ArrowDown" || evento.key === "ArrowUp") {
+    if (listaProductos.hidden) {
+      mostrarListaProductos(inputProducto.value);
+      return;
+    }
+    if (!opciones.length) return;
+    evento.preventDefault();
+    const paso = evento.key === "ArrowDown" ? 1 : -1;
+    resaltarProducto((resaltadaProducto + paso + opciones.length) % opciones.length);
+    return;
+  }
   if (evento.key === "Enter" && !listaProductos.hidden) {
-    const primera = listaProductos.querySelector(".dropdown-opcion[data-id]");
-    if (primera) {
+    // Con una opción resaltada con las flechas se elige esa; si no, la primera.
+    const elegida = opciones[resaltadaProducto >= 0 ? resaltadaProducto : 0];
+    if (elegida) {
       evento.preventDefault();
-      seleccionarProducto(parseInt(primera.dataset.id, 10));
+      seleccionarProducto(parseInt(elegida.dataset.id, 10));
     }
   }
 });

@@ -1,0 +1,33 @@
+# Desarrollo local. Docker Compose aplica este archivo AUTOMÁTICAMENTE junto con
+# docker-compose.yml cuando se ejecuta "docker compose up" (y por eso
+# ejecutar_docker.ps1 sigue funcionando igual que antes).
+#
+# El docker-compose.yml base trae valores SEGUROS por defecto (sin usuarios de
+# prueba, sin endpoint de seed, sin puertos de RabbitMQ publicados). Acá se
+# activan las comodidades de desarrollo. NO se usa en producción: allá se
+# ejecuta "docker compose -f docker-compose.prod.yml up -d" (ver docs/DESPLIEGUE.md).
+services:
+  rabbitmq:
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+
+  auth:
+    environment:
+      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
+
+  productos:
+    environment:
+      HABILITAR_SEED_ENDPOINT: ${HABILITAR_SEED_ENDPOINT:-true}
+
+  frontend:
+    environment:
+      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
+
+  prometheus:
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"

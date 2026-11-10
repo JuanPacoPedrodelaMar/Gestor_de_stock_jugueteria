@@ -296,12 +296,12 @@ lógica de negocio.
 - **El filtro de caracteres es una lista de prohibidos, no una lista
   blanca**: es una capa adicional; la defensa principal contra la inyección
   SQL son las consultas con parámetros enlazados de SQLAlchemy.
-- **Pool de conexiones por defecto de SQLAlchemy (5 más 10 de desborde)**:
-  en una prueba local con 150 ventas simultáneas y stock suficiente, la
-  mayoría de las peticiones no obtuvo respuesta (`QueuePool limit of size 5
-  overflow 10 reached`); con `pool_size=20` y `max_overflow=60` en
-  `create_engine` se resolvieron todas. Ese ajuste todavía no está aplicado,
-  y la prueba de 20 peticiones de la batería no llega a exponerlo.
+- **Pool de conexiones**: con el pool por defecto de SQLAlchemy (5 más 10 de
+  desborde), 150 ventas simultáneas agotaban las conexiones (`QueuePool limit
+  of size 5 overflow 10 reached`); con `pool_size=20` y `max_overflow=60` se
+  resolvieron todas. **Ese ajuste ya está aplicado** en `app/database/db.py`
+  (variables `DB_POOL_SIZE` / `DB_MAX_OVERFLOW`), junto con SQLite en modo WAL
+  y `busy_timeout`.
 
 ## Variables de entorno
 

@@ -105,6 +105,14 @@ def test_misma_clave_devuelve_el_mismo_movimiento_y_ajusta_una_vez(client, produ
     assert productos.stock[1] == 7
 
 
+def test_post_con_cantidad_gigante_devuelve_400_y_no_llega_a_productos(client, productos):
+    """Un entero > 2**63 rompía SQLite en Productos y dejaba un movimiento pendiente huérfano."""
+    resp = client.post("/api/v1/movimientos", json={**VENTA, "cantidad_movida": 10**20}, headers=_headers())
+    assert resp.status_code == 400
+    resp = client.post("/api/v1/movimientos", json={**VENTA, "cantidad_movida": 1_000_001}, headers=_headers())
+    assert resp.status_code == 400
+
+
 def test_clave_reutilizada_con_otro_contenido_devuelve_422(client, productos):
     client.post("/api/v1/movimientos", json=VENTA, headers=_headers(clave="k1"))
 

@@ -114,4 +114,5 @@ def test_el_payload_del_evento_conserva_el_formato_documentado():
         "stock_actual": 3,
         "stock_minimo": 5,
         "nombre_producto": "Auto a fricción",
+        "request_id": None,
     }

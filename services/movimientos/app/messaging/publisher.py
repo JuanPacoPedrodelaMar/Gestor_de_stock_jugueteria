@@ -35,6 +35,8 @@ from typing import Callable, Iterator
 
 import pika
 
+from app.core import observabilidad
+
 logger = logging.getLogger(__name__)
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://admin:admin123@localhost:5672/")
@@ -58,6 +60,9 @@ def construir_payload(movimiento, producto: dict) -> dict:
         "stock_actual": producto.get("stock_actual"),
         "stock_minimo": producto.get("stock_minimo"),
         "nombre_producto": producto.get("nombre"),
+        # ID de correlación del pedido que originó el movimiento: permite seguirlo
+        # hasta el worker (ver observabilidad.py). Puede ser None (p. ej. en tests).
+        "request_id": observabilidad.request_id_actual(),
     }
 
 

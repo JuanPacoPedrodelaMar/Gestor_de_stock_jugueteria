@@ -70,7 +70,8 @@ trivial del payload.
   "fecha_hora": "2026-09-27T14:32:10.123456+00:00",
   "stock_actual": 3,
   "stock_minimo": 5,
-  "nombre_producto": "Auto a fricción"
+  "nombre_producto": "Auto a fricción",
+  "request_id": "9f1c2e7a4b3d4c6e8a1b2c3d4e5f6a7b"
 }
 ```
 
@@ -84,6 +85,11 @@ trivial del payload.
 | `stock_actual` | int | Stock del producto **después** del ajuste aplicado por este movimiento. (En un movimiento que se confirmó por reconciliación es el stock *actual* del producto en ese momento.) |
 | `stock_minimo` | int | Stock mínimo configurado del producto. |
 | `nombre_producto` | string | Nombre del producto (para que el consumidor pueda loguear/mostrar sin consultar `productos`). |
+| `request_id` | string \| null | **ID de correlación** del pedido HTTP que originó el movimiento (el `X-Request-ID` que atravesó los servicios). El worker lo retoma y lo escribe en sus logs, así una venta se sigue de punta a punta. Es **opcional** para los consumidores (puede ser `null`, p. ej. al reconciliar). Se agregó sin romper a los consumidores existentes: los campos extra se ignoran. |
+
+### Validación en el consumidor
+
+El worker valida el mensaje antes de procesarlo: debe ser un objeto JSON con los enteros `id_movimiento`, `id_producto`, `stock_actual` y `stock_minimo`. Un mensaje que no cumple **no se reintenta** (reintentarlo no lo arregla): va directo a la dead-letter queue `alertas.stock.bajo.dlq` con el header `x-motivo-dlq` indicando por qué.
 
 ### Idempotencia del consumidor
 

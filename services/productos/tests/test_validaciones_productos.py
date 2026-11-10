@@ -8,6 +8,8 @@ handler personalizado de RequestValidationError en app/main.py, que
 traduce el 422 estándar de FastAPI/Pydantic a 400 con un formato de
 error propio del proyecto).
 """
+import json
+
 import pytest
 
 
@@ -119,3 +121,32 @@ def test_actualizar_producto_sin_stock_actual_preserva_el_valor_previo(client, p
 
     assert resp.status_code == 200
     assert resp.json()["stock_actual"] == producto_payload["stock_actual"]
+
+
+# --- Topes numéricos (AE4: sin enteros gigantes ni precios infinitos) ---------
+
+def test_crear_producto_con_stock_gigante_devuelve_400_y_no_500(client, producto_payload):
+    """Un entero > 2**63 rompía SQLite con un 500; ahora se rechaza en la validación."""
+    resp = client.post("/api/v1/productos", json={**producto_payload, "stock_actual": 10**20})
+    assert resp.status_code == 400
+
+
+def test_crear_producto_con_precio_por_encima_del_tope_devuelve_400(client, producto_payload):
+    resp = client.post("/api/v1/productos", json={**producto_payload, "precio_venta": 1e12})
+    assert resp.status_code == 400
+
+
+def test_crear_producto_con_precio_infinito_devuelve_400(client, producto_payload):
+    """`Infinity >= 0` es verdadero: sin `allow_inf_nan=False`/tope pasaba la validación y rompía el listado."""
+    cuerpo = json.dumps({**producto_payload, "precio_venta": 1}).replace('"precio_venta": 1,', '"precio_venta": Infinity,')
+    assert "Infinity" in cuerpo
+    resp = client.post("/api/v1/productos", content=cuerpo, headers={"Content-Type": "application/json"})
+    assert resp.status_code == 400
+    assert client.get("/api/v1/productos").status_code == 200  # el listado sigue sano
+
+
+def test_ajustar_stock_con_delta_fuera_de_rango_devuelve_400(client, producto_payload):
+    creado = client.post("/api/v1/productos", json=producto_payload).json()
+    for delta in (10**20, -(10**20), 1_000_001):
+        resp = client.patch(f"/api/v1/productos/{creado['id_producto']}/ajustar-stock", json={"delta": delta})
+        assert resp.status_code == 400, delta

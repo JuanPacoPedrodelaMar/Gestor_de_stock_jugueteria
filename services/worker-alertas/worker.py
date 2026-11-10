@@ -30,6 +30,7 @@ import time
 import pika
 
 import health
+import observabilidad
 from alertas import (
     evaluar_y_generar_alerta,
     inicializar_db,
@@ -37,7 +38,7 @@ from alertas import (
     ya_fue_procesado,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+observabilidad.configurar_logging("worker-alertas")
 logger = logging.getLogger("worker-alertas")
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://admin:admin123@localhost:5672/")
@@ -99,28 +100,105 @@ def declarar_topologia(canal):
 
 def contar_reintentos_previos(properties) -> int:
     """
-    RabbitMQ agrega automáticamente el header 'x-death' con un registro por
-    cada vez que un mensaje fue dead-letterado. Su longitud es una forma
-    confiable de saber cuántas veces ya pasó por el ciclo de reintento.
+    Cuántas veces ya falló este mensaje en la cola principal.
+
+    RabbitMQ agrega el header 'x-death', pero NO guarda un registro por cada
+    muerte: guarda UNA entrada por cada par (cola, razón) con un campo `count`
+    que se va incrementando. Con esta topología el mensaje pasa por dos pares
+    ((principal, rejected) y (retry, expired)), así que `len(x-death)` vale como
+    máximo 2 y jamás llegaría a MAX_REINTENTOS: el mensaje se reintentaría para
+    siempre sin ir a la DLQ. Lo correcto es sumar el `count` de la entrada de la
+    cola principal rechazada (cada `nack` del worker incrementa ese contador).
     """
     headers = properties.headers or {}
-    x_death = headers.get("x-death", [])
-    return len(x_death)
+    entradas = [e for e in (headers.get("x-death") or []) if isinstance(e, dict)]
+    if not entradas:
+        return 0
+    rechazos = [
+        int(e.get("count", 1)) for e in entradas
+        if e.get("queue") == COLA_PRINCIPAL and e.get("reason") == "rejected"
+    ]
+    if rechazos:
+        return sum(rechazos)
+    # Entradas sin cola/razón reconocibles (otra topología): criterio conservador,
+    # el mayor contador observado.
+    return max(int(e.get("count", 1)) for e in entradas)
+
+
+class PayloadInvalido(Exception):
+    """El mensaje no se puede interpretar: reintentarlo no lo arregla (va directo a la DLQ)."""
+
+
+def _es_entero(valor) -> bool:
+    return isinstance(valor, int) and not isinstance(valor, bool)
+
+
+def interpretar_payload(body) -> dict:
+    """Decodifica y valida el evento. Levanta PayloadInvalido ante cualquier defecto."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError) as error:  # incluye UnicodeDecodeError y JSONDecodeError
+        raise PayloadInvalido(f"No es JSON válido: {error}") from error
+    if not isinstance(payload, dict):
+        raise PayloadInvalido("El mensaje no es un objeto JSON.")
+    for campo in ("id_movimiento", "id_producto", "stock_actual", "stock_minimo"):
+        if not _es_entero(payload.get(campo)):
+            raise PayloadInvalido(f"Falta el campo entero '{campo}' o tiene un tipo inválido.")
+    return payload
+
+
+def _enviar_a_dlq(canal, body, motivo: str) -> None:
+    canal.basic_publish(
+        exchange=EXCHANGE_DLX,
+        routing_key=ROUTING_KEY_DLQ,
+        body=body,
+        properties=pika.BasicProperties(
+            content_type="application/json", delivery_mode=2, headers={"x-motivo-dlq": motivo[:200]}
+        ),
+    )
+
+
+def _contar(resultado: str) -> None:
+    observabilidad.REGISTRO.inc(
+        "worker_mensajes_total", "Mensajes procesados por el worker según el resultado.", {"resultado": resultado}
+    )
 
 
 def procesar_mensaje(canal, method, properties, body, conexion_idempotencia):
-    payload = json.loads(body)
-    id_movimiento = payload["id_movimiento"]
+    # Un mensaje que no se puede interpretar nunca se va a poder procesar: se
+    # manda directo a la DLQ (con el motivo) y se confirma. Antes la excepción
+    # salía del consumidor, el proceso moría y el mensaje volvía a entregarse:
+    # un bucle de caídas.
+    try:
+        payload = interpretar_payload(body)
+    except PayloadInvalido as error:
+        logger.error("Mensaje inválido, se envía a la DLQ: %s", error, extra={"evento": "mensaje_invalido"})
+        _enviar_a_dlq(canal, body, f"payload_invalido: {error}")
+        canal.basic_ack(delivery_tag=method.delivery_tag)
+        _contar("invalido")
+        return
 
+    id_movimiento = payload["id_movimiento"]
+    # Correlación: se retoma el ID del pedido que originó el movimiento.
+    token_rid = observabilidad.fijar_request_id(observabilidad.request_id_entrante(payload.get("request_id")))
+    try:
+        _procesar_validado(canal, method, properties, body, payload, id_movimiento, conexion_idempotencia)
+    finally:
+        observabilidad.restablecer_request_id(token_rid)
+
+
+def _procesar_validado(canal, method, properties, body, payload, id_movimiento, conexion_idempotencia):
     if ya_fue_procesado(conexion_idempotencia, id_movimiento):
         logger.info("id_movimiento=%s ya fue procesado antes; se descarta sin reprocesar.", id_movimiento)
         canal.basic_ack(delivery_tag=method.delivery_tag)
+        _contar("duplicado")
         return
 
     try:
         genero_alerta = evaluar_y_generar_alerta(payload)
         marcar_como_procesado(conexion_idempotencia, id_movimiento, payload["id_producto"], genero_alerta)
         canal.basic_ack(delivery_tag=method.delivery_tag)
+        _contar("alerta" if genero_alerta else "sin_alerta")
     except Exception:
         logger.exception("Error procesando id_movimiento=%s", id_movimiento)
         intentos_previos = contar_reintentos_previos(properties)
@@ -130,14 +208,11 @@ def procesar_mensaje(canal, method, properties, body, conexion_idempotencia):
                 "id_movimiento=%s superó MAX_REINTENTOS=%s; se envía a la DLQ final.",
                 id_movimiento, MAX_REINTENTOS,
             )
-            canal.basic_publish(
-                exchange=EXCHANGE_DLX,
-                routing_key=ROUTING_KEY_DLQ,
-                body=body,
-                properties=pika.BasicProperties(content_type="application/json", delivery_mode=2),
-            )
+            _enviar_a_dlq(canal, body, f"max_reintentos_{MAX_REINTENTOS}")
             canal.basic_ack(delivery_tag=method.delivery_tag)
+            _contar("dlq")
         else:
+            _contar("reintento")
             # requeue=False: NO vuelve a la misma cola directamente, cae por
             # dead-lettering en la cola de reintentos (con el TTL de backoff).
             canal.basic_nack(delivery_tag=method.delivery_tag, requeue=False)

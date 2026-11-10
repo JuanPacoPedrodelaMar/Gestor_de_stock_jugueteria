@@ -10,15 +10,15 @@
   :root{
     --crema: #FFF8EE;
     --tinta: #2B2440;
-    --naranja: #FF7A45;
-    --turquesa: #1FA2A6;
+    --naranja: #CC3900;
+    --turquesa: #198084;
     --amarillo: #FFC93C;
-    --rosa: #FF5D8F;
+    --rosa: #E70047;
     --linea: #E7DFCE;
     --ok-bg: #E4F5E9;
     --ok-fg: #1E7A44;
     --warn-bg: #FFF1DC;
-    --warn-fg: #B5690A;
+    --warn-fg: #9D5B09;
     --danger-bg: #FDE7E9;
     --danger-fg: #C6293D;
   }
@@ -142,7 +142,7 @@
 
   #mensaje-cancelar{
     font-size: 13px;
-    color:#8a8299;
+    color:#756D85;
   }
 
   table{
@@ -190,7 +190,7 @@
   .vacio{
     text-align:center;
     padding: 30px 10px;
-    color: #8a8299;
+    color: #756D85;
     font-size: 14px;
   }
 
@@ -327,7 +327,7 @@
   footer{
     text-align:center;
     font-size: 12px;
-    color:#a89fbb;
+    color:#776995;
     padding: 10px 0 30px;
   }
 
@@ -336,7 +336,7 @@
     margin-top: 4px;
     font-size: 11px;
     font-weight: 400;
-    color: #a89fbb;
+    color: #776995;
   }
 
   .encabezado-inventario{
@@ -356,7 +356,7 @@
 
   .etiqueta-inline{
     font-size: 12px;
-    color:#8a8299;
+    color:#756D85;
   }
 
   #cantidad-seed{
@@ -381,7 +381,7 @@
     font-size: 14px;
     margin: 0 0 4px;
   }
-  .acceso-rapido p{ margin: 0 0 12px; font-size: 12px; color:#8a8299; }
+  .acceso-rapido p{ margin: 0 0 12px; font-size: 12px; color:#756D85; }
   .acceso-rapido .fila{ display:flex; gap:10px; flex-wrap:wrap; }
   .btn-rol{
     flex:1 1 180px;
@@ -404,7 +404,7 @@
   }
   .btn-rol.admin{ background: var(--amarillo); }
   .btn-rol.empleado{ background: var(--turquesa); color:#fff; }
-  .btn-rol.empleado small{ color:#e6fafa; }
+  .btn-rol.empleado small{ color:#ffffff; }
   .usuario-actual{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .usuario-actual .nombre{ font-size: 13px; font-weight:700; }
   .rol-admin{ background: var(--amarillo); color: var(--tinta); }
@@ -505,7 +505,7 @@
     background: var(--crema);
   }
   .dropdown-opcion.sin-resultados{
-    color: #8a8299;
+    color: #756D85;
     font-style: italic;
     cursor: default;
   }
@@ -515,12 +515,12 @@
 
   /* --- Roles de empleado --- */
   .btn-rol.almacen{ background: var(--naranja); color:#fff; }
-  .btn-rol.almacen small{ color:#ffe9de; }
+  .btn-rol.almacen small{ color:#ffffff; }
   .btn-rol.ventas{ background: var(--rosa); color:#fff; }
-  .btn-rol.ventas small{ color:#ffe6ee; }
+  .btn-rol.ventas small{ color:#ffffff; }
   .btn-rol.mixto{ background: var(--turquesa); color:#fff; }
-  .btn-rol.mixto small{ color:#e6fafa; }
-  .rol-almacen{ background:#FFE3D6; color:#B04A1B; }
+  .btn-rol.mixto small{ color:#ffffff; }
+  .rol-almacen{ background:#FFE3D6; color:#AC481A; }
   .rol-ventas{ background:#FFE0EA; color:#B02A57; }
   .rol-mixto{ background:#D9F3F3; color:#0E6E71; }
   .acceso-rapido .fila .btn-rol{ flex: 1 1 200px; }
@@ -1033,50 +1033,6 @@
 <script src="movimientos.js"></script>
 <script src="clientes.js"></script>
 <script src="solicitudes.js"></script>
-<script>
-  // Alternar entre las vistas "Inventario", "Movimientos" y "Clientes".
-  // Cada pestaña se muestra solo si el rol del usuario la puede usar (app.js:
-  // aplicarPermisosDeRol oculta los botones que no corresponden).
-  const VISTAS_APP = {
-    productos: {
-      boton: "tab-btn-productos",
-      vista: "vista-productos",
-      cargar: () => { if (typeof cargarProductos === "function") cargarProductos(); },
-    },
-    movimientos: {
-      boton: "tab-btn-movimientos",
-      vista: "vista-movimientos",
-      cargar: () => {
-        if (typeof cargarOpcionesDeProductos === "function") cargarOpcionesDeProductos();
-        if (typeof cargarMovimientos === "function") cargarMovimientos();
-      },
-    },
-    clientes: {
-      boton: "tab-btn-clientes",
-      vista: "vista-clientes",
-      cargar: () => { if (typeof cargarClientes === "function") cargarClientes(); },
-    },
-  };
-
-  function activarVista(nombre) {
-    const destino = VISTAS_APP[nombre];
-    // Si la pestaña pedida está oculta para este rol, se vuelve a Inventario.
-    if (!destino || document.getElementById(destino.boton).style.display === "none") {
-      nombre = "productos";
-    }
-    Object.entries(VISTAS_APP).forEach(([clave, v]) => {
-      document.getElementById(v.boton).classList.toggle("activo", clave === nombre);
-      document.getElementById(v.vista).classList.toggle("activa", clave === nombre);
-    });
-    VISTAS_APP[nombre].cargar();
-  }
-
-  Object.entries(VISTAS_APP).forEach(([clave, v]) => {
-    document.getElementById(v.boton).addEventListener("click", () => activarVista(clave));
-  });
-
-  // Se arranca la sesión recién ahora, con todos los scripts ya cargados.
-  restaurarSesion();
-</script>
+<script src="vistas.js"></script>
 </body>
 </html>

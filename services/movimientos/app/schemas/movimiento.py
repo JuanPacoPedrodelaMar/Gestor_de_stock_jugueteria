@@ -16,7 +16,7 @@ class MovimientoCreate(BaseModel):
         ..., description="venta | ingreso | estropeo | devolucion"
     )
     cantidad_movida: int = Field(
-        ..., gt=0, description="Cantidad movida, siempre positiva; el signo lo define la categoría"
+        ..., gt=0, le=1_000_000, description="Cantidad movida, siempre positiva (hasta 1.000.000); el signo lo define la categoría"
     )
     id_producto: int = Field(..., description="ID del producto afectado (servicio de Productos)")
     id_cliente: Optional[int] = Field(

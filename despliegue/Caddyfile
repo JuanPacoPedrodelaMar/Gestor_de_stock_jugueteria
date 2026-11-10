@@ -1,0 +1,11 @@
+# Caddy: termina TLS (certificado de Let's Encrypt automático) y reenvía TODO al
+# gateway nginx del contenedor "frontend". DOMINIO viene del .env (ej. mi-jugueteria.duckdns.org).
+# Con DOMINIO=localhost genera un certificado local de prueba.
+{$DOMINIO} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy frontend:80
+}

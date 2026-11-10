@@ -5,7 +5,10 @@ RabbitMQ (worker.py) para poder testearla sin necesitar un broker real.
 El evento es autocontenido: trae stock_actual, stock_minimo y nombre del
 producto al momento del movimiento. El worker no consulta Productos.
 """
+import logging
 import sqlite3
+
+logger = logging.getLogger("worker-alertas.alertas")
 
 UMBRAL_LOG = "[ALERTA STOCK BAJO]"
 
@@ -64,10 +67,15 @@ def evaluar_y_generar_alerta(payload: dict) -> bool:
     stock_minimo = payload["stock_minimo"]
 
     if stock_actual <= stock_minimo:
-        print(
-            f"{UMBRAL_LOG} producto={payload.get('nombre_producto', id_producto)} "
-            f"(id={id_producto}) stock_actual={stock_actual} stock_minimo={stock_minimo} "
-            f"-- disparado por movimiento id_movimiento={payload['id_movimiento']}"
+        logger.warning(
+            "%s producto=%s (id=%s) stock_actual=%s stock_minimo=%s -- disparado por movimiento id_movimiento=%s",
+            UMBRAL_LOG, payload.get("nombre_producto", id_producto), id_producto,
+            stock_actual, stock_minimo, payload["id_movimiento"],
+            extra={
+                "evento": "alerta_stock_bajo", "id_producto": id_producto,
+                "stock_actual": stock_actual, "stock_minimo": stock_minimo,
+                "id_movimiento": payload["id_movimiento"],
+            },
         )
         return True
     return False

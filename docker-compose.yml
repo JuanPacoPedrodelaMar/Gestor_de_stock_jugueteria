@@ -3,6 +3,12 @@ services:
     image: redis:7-alpine
     container_name: jugueteria-redis
     restart: unless-stopped
+    # Persistencia (AOF): los refresh tokens y la blacklist de JWT viven SOLO en
+    # Redis; sin esto, reiniciarlo desloguea a todos y "des-revoca" los access
+    # tokens ya cerrados (hasta 15 min). Ver docs/adr/0004-redis-persistente.md.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -16,9 +22,9 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-admin}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-admin123}
-    ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    # Sin "ports": RabbitMQ solo es accesible desde la red interna de Compose.
+    # El puerto de administración (15672) se publica solo en desarrollo
+    # (docker-compose.override.yml).
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -34,13 +40,14 @@ services:
     container_name: jugueteria-auth
     restart: unless-stopped
     environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: ${AUTH_DATABASE_URL:-sqlite:////app/data/auth.db}
       AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-}
       AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-}
       AUTH_ADMIN_DNI: ${AUTH_ADMIN_DNI:-}
-      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
+      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-false}
       PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
       PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
       PRUEBA_ADMIN_DNI: ${PRUEBA_ADMIN_DNI:-20000001}
@@ -73,9 +80,10 @@ services:
     container_name: jugueteria-productos
     restart: unless-stopped
     environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       PRODUCTO_COOLDOWN_BORRADO_SEGUNDOS: ${PRODUCTO_COOLDOWN_BORRADO_SEGUNDOS:-300}
       DATABASE_URL: ${PRODUCTOS_DATABASE_URL:-sqlite:////app/data/jugueteria.db}
-      HABILITAR_SEED_ENDPOINT: ${HABILITAR_SEED_ENDPOINT:-true}
+      HABILITAR_SEED_ENDPOINT: ${HABILITAR_SEED_ENDPOINT:-false}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
       # Productos le pregunta a Movimientos si un producto tiene historial antes
@@ -102,6 +110,7 @@ services:
     container_name: jugueteria-clientes
     restart: unless-stopped
     environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DATABASE_URL: ${CLIENTES_DATABASE_URL:-sqlite:////app/data/clientes.db}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
@@ -125,6 +134,7 @@ services:
     container_name: jugueteria-movimientos
     restart: unless-stopped
     environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DATABASE_URL: ${MOVIMIENTOS_DATABASE_URL:-sqlite:////app/data/movimientos.db}
       PRODUCTOS_SERVICE_URL: http://productos:8000
       CLIENTES_SERVICE_URL: http://clientes:8000
@@ -191,7 +201,7 @@ services:
       AUTH_API_URL: ${AUTH_API_URL:-http://localhost:8001}
       MOVIMIENTOS_API_URL: ${MOVIMIENTOS_API_URL:-http://localhost:8002}
       CLIENTES_API_URL: ${CLIENTES_API_URL:-http://localhost:8004}
-      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
+      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-false}
       PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
       PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
       PRUEBA_ADMIN_DNI: ${PRUEBA_ADMIN_DNI:-20000001}
@@ -222,6 +232,36 @@ services:
       retries: 5
       start_period: 5s
 
+  # --- Observabilidad (opcional): docker compose --profile observabilidad up -d ---
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: jugueteria-prometheus
+    restart: unless-stopped
+    profiles: ["observabilidad"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./observabilidad/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observabilidad/alertas.yml:/etc/prometheus/alertas.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: jugueteria-grafana
+    restart: unless-stopped
+    profiles: ["observabilidad"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observabilidad/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observabilidad/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   productos_data:
   movimientos_data:
@@ -230,3 +270,5 @@ volumes:
   redis_data:
   rabbitmq_data:
   alertas_data:
+  prometheus_data:
+  grafana_data:
