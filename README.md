@@ -1013,8 +1013,25 @@ python scripts/prueba_carga.py --niveles 1,10,25,50 --duracion 15 --actualizar-r
 
 <!-- CARGA:INICIO -->
 
-_Todavía no se midió en este entorno: ejecutá el comando de arriba y esta tabla se completa sola. El
-pipeline de CI también guarda un informe corto (`resultados-carga`) en cada ejecución._
+_Medido el 2026-11-10 11:33 · Docker Compose local · Windows AMD64 · 15 s por nivel · conexiones persistentes · cliente en el mismo equipo/red que el sistema._
+
+**Lectura: GET /api/v1/productos**
+
+| Concurrencia | Pedidos | req/s | Media (ms) | p50 (ms) | p95 (ms) | p99 (ms) | Máx (ms) | Errores |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 4096 | 273.0 | 3.7 | 3.5 | 4.7 | 5.5 | 51.8 | 0 (0.0%) |
+| 10 | 3565 | 237.2 | 42.1 | 40.9 | 55.5 | 76.8 | 95.2 | 0 (0.0%) |
+| 25 | 3479 | 231.0 | 107.9 | 105.1 | 141.2 | 168.9 | 228.4 | 0 (0.0%) |
+| 50 | 3454 | 228.4 | 217.9 | 210.3 | 266.4 | 332.6 | 468.9 | 0 (0.0%) |
+
+**Escritura: POST /api/v1/movimientos (venta)**
+
+| Concurrencia | Pedidos | req/s | Media (ms) | p50 (ms) | p95 (ms) | p99 (ms) | Máx (ms) | Errores |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 216 | 14.4 | 69.7 | 69.0 | 76.0 | 85.4 | 185.3 | 0 (0.0%) |
+| 10 | 736 | 48.6 | 204.6 | 166.5 | 411.3 | 863.4 | 1531.1 | 0 (0.0%) |
+| 25 | 734 | 47.6 | 515.5 | 288.8 | 1610.2 | 2901.3 | 4594.4 | 0 (0.0%) |
+| 50 | 788 | 50.2 | 970.3 | 561.9 | 3022.2 | 4371.4 | 5313.4 | 1 (0.13%) |
 
 <!-- CARGA:FIN -->
 
