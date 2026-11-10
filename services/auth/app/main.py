@@ -157,7 +157,7 @@ async def agregar_encabezados_seguridad(request: Request, call_next):
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content={"error": True, "mensaje": "Datos inválidos en la solicitud.", "detalles": jsonable_encoder(exc.errors())},
+        content={"error": True, "mensaje": "Datos inválidos en la solicitud.", "detalles": jsonable_encoder([{k: v for k, v in e.items() if k != "input"} for e in exc.errors()])},
     )
 
 

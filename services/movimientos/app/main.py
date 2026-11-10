@@ -133,7 +133,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={
             "error": True,
             "mensaje": "Datos inválidos en la solicitud.",
-            "detalles": jsonable_encoder(exc.errors()),
+            "detalles": jsonable_encoder([{k: v for k, v in e.items() if k != "input"} for e in exc.errors()]),
         },
     )
 
