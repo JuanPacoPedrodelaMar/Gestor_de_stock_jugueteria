@@ -5,3 +5,6 @@ pydantic==2.10.3
 python-jose[cryptography]==3.3.0
 redis==5.2.1
 httpx==0.28.1
+
+# Driver de PostgreSQL (base de datos externa en Render/Neon/Supabase)
+psycopg2-binary==2.9.10
