@@ -11,6 +11,3 @@ passlib[bcrypt]==1.7.4
 # bcrypt conocida como compatible.
 bcrypt==4.2.1
 redis==5.2.1
-
-# Driver de PostgreSQL (base de datos externa en Render/Neon/Supabase)
-psycopg2-binary==2.9.10
