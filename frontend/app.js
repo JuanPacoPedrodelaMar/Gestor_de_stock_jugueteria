@@ -596,14 +596,59 @@ tabla.addEventListener("click", (evento) => {
   else if (boton.dataset.accion === "eliminar") eliminarProducto(id, boton.dataset.ventana === "1");
 });
 
+// --- Aviso de stock bajo ---------------------------------------------------
+// Misma regla que la etiqueta de cada fila y que el worker de alertas:
+// stock_actual <= stock_minimo.
+const avisoStockBajo = document.getElementById("aviso-stock-bajo");
+const avisoStockBajoTexto = document.getElementById("aviso-stock-bajo-texto");
+const btnFiltroStockBajo = document.getElementById("btn-filtro-stock-bajo");
+let soloStockBajo = false;
+let ultimosProductosRenderizados = [];
+
+function esStockBajo(prod) {
+  return prod.stock_actual <= prod.stock_minimo;
+}
+
+function actualizarAvisoStockBajo(productos) {
+  if (!avisoStockBajo) return;
+  const bajos = productos.filter(esStockBajo);
+  if (!bajos.length) {
+    soloStockBajo = false;
+    avisoStockBajo.hidden = true;
+    return;
+  }
+  const agotados = bajos.filter((p) => p.stock_actual <= 0).length;
+  const nombres = bajos.slice(0, 5).map((p) => escaparHtml(p.nombre)).join(", ");
+  const resto = bajos.length > 5 ? ` y ${bajos.length - 5} más` : "";
+  const titulo = bajos.length === 1
+    ? "<strong>1 producto con stock bajo</strong>"
+    : `<strong>${bajos.length} productos con stock bajo</strong>`;
+  const detalleAgotados = agotados ? ` (${agotados} agotado${agotados === 1 ? "" : "s"})` : "";
+  avisoStockBajoTexto.innerHTML = `${titulo}${detalleAgotados}<small>${nombres}${resto}</small>`;
+  btnFiltroStockBajo.textContent = soloStockBajo ? "Ver todos" : "Ver solo estos";
+  avisoStockBajo.hidden = false;
+}
+
+if (btnFiltroStockBajo) {
+  btnFiltroStockBajo.addEventListener("click", () => {
+    soloStockBajo = !soloStockBajo;
+    renderizarTabla(ultimosProductosRenderizados);
+  });
+}
+
 function renderizarTabla(productos) {
+  ultimosProductosRenderizados = productos;
+  actualizarAvisoStockBajo(productos);
+
   if (!productos.length) {
     tabla.innerHTML = `<tr><td colspan="7" class="vacio">Todavía no hay productos cargados.</td></tr>`;
     return;
   }
 
+  if (soloStockBajo) productos = productos.filter(esStockBajo);
+
   tabla.innerHTML = productos.map((prod) => {
-    const stockBajo = prod.stock_actual <= prod.stock_minimo;
+    const stockBajo = esStockBajo(prod);
     const etiquetaStock = stockBajo
       ? `<span class="etiqueta stock-bajo">${prod.stock_actual} (mín. ${prod.stock_minimo})</span>`
       : `<span class="etiqueta stock-ok">${prod.stock_actual}</span>`;

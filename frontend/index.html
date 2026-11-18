@@ -174,6 +174,24 @@
   .stock-ok{ background: var(--ok-bg); color: var(--ok-fg); }
   .stock-bajo{ background: var(--warn-bg); color: var(--warn-fg); }
 
+  /* --- Aviso de stock bajo (arriba del inventario) --- */
+  .aviso-stock-bajo{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    margin: 0 0 14px; padding: 12px 14px;
+    background: var(--warn-bg); color: var(--warn-fg);
+    border: 1px solid var(--warn-fg); border-radius: 10px;
+    font-size: 14px; line-height: 1.4;
+  }
+  .aviso-stock-bajo[hidden]{ display:none; }
+  .aviso-stock-bajo .aviso-texto{ flex:1 1 260px; }
+  .aviso-stock-bajo .aviso-texto small{ display:block; margin-top:2px; opacity:.85; }
+  .aviso-stock-bajo button{
+    cursor:pointer; font: inherit; font-weight:700;
+    padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--warn-fg); background: transparent; color: var(--warn-fg);
+  }
+  .aviso-stock-bajo button:hover{ background: var(--warn-fg); color: var(--warn-bg); }
+
   .col-acciones{ display:flex; gap:6px; }
 
   .estado{
@@ -747,6 +765,11 @@
         <button type="button" id="btn-seed" class="btn-secundario">🎲 Cargar datos de prueba</button>
       </div>
     </div>
+    <div id="aviso-stock-bajo" class="aviso-stock-bajo" role="alert" hidden>
+      <span aria-hidden="true">⚠️</span>
+      <div class="aviso-texto" id="aviso-stock-bajo-texto"></div>
+      <button type="button" id="btn-filtro-stock-bajo"></button>
+    </div>
     <table>
       <thead>
         <tr>
@@ -954,6 +977,8 @@
       </tbody>
     </table>
   </section>
+
+  </div><!-- ✅ FIX: cierra #vista-movimientos (antes faltaba este </div> y #vista-clientes quedaba anidada adentro, por eso la pestaña se veía en blanco) -->
 
   <div id="vista-clientes" class="vista">
 
